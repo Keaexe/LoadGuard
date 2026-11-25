@@ -115,4 +115,37 @@ echo "ok: saved limits reapplied on restart"
 lg clear --all; nft list tables | grep -q loadguard && fail "clear left rules"
 busctl --address="$DBUS_SYSTEM_BUS_ADDRESS" call io.github.keaexe.LoadGuard1 /io/github/keaexe/LoadGuard1 io.github.keaexe.LoadGuard1 SetLimit sttb "x" 5 0 false >/dev/null 2>&1 && fail "bad rate accepted"
 echo "ok: invalid rates rejected by the helper"
+# run: the first seconds count, so this measures from the first byte.
+cat >"$LG_TMP/first.py" <<'P'
+import socket, time
+c = socket.create_connection(("10.9.9.2", 9001)); c.settimeout(1)
+end = time.time() + 4; n = 0
+while time.time() < end:
+    try: n += len(c.recv(65536))
+    except TimeoutError: pass
+print(int(n / 4000))
+P
+lg limit $app -d 5000 >/dev/null
+between "run, cap 500, from the first byte" "$(lg run -d 500 -- python3 "$LG_TMP/first.py" 2>/dev/null)" 200 700
+[ "$(lg run -d 500 -- sh -c 'echo "$1|$2"; exit 7' x 'a b' '$HOME %n'; echo $?)" = $'a b|$HOME %n\n7' ] || fail "run arguments or exit code"
+echo "ok: run keeps arguments and exit code"
+lg run -d 500 -- sleep 4 & a=$!; sleep 1; lg run -d 600 -- sleep 3 2>/dev/null & b=$!; sleep 1
+out=$(lg list); wait $a $b
+[[ $out == *"sleep "*"until closed"*"sleep-2 "* ]] || fail "parallel runs: $out"
+sleep 2; out=$(lg list); [[ $out != *sleep* ]] || fail "run limit outlived its program: $out"
+[[ $out == *"$app"*"5 MB/s"*always* ]] || fail "run disturbed a saved limit: $out"
+echo "ok: run limits are separate and end with the program"
+out=$(lg run -d 5 -- flatpak run x 2>&1) && fail "flatpak accepted"
+kill $pk; wait $pk 2>/dev/null || true; kill $hp; wait $hp 2>/dev/null || true; polkit deny; start_helper
+out=$(lg run -d 500 -- touch "$LG_TMP/launched" 2>&1) && fail "run succeeded when denied"
+[ ! -e "$LG_TMP/launched" ] || fail "program started without its limit"
+echo "ok: nothing is launched when authorization is denied"
+kill $hp; wait $hp 2>/dev/null || true
+out=$(lg run -d 500 -- touch "$LG_TMP/launched" 2>&1) && fail "run succeeded without helper"
+[ ! -e "$LG_TMP/launched" ] || fail "launched without helper"
+echo "ok: nothing is launched when the helper is unavailable"
+# What happens if a program moves itself to another scope, as some apps do.
+kill $pk; wait $pk 2>/dev/null || true; polkit allow; start_helper
+esc=$(lg run -d 500 -- systemd-run 2>&1 || true); [[ $esc == *"outside its own group"* ]] || fail "systemd-run accepted"
+echo "info: self-moving program gets $(lg run -d 500 -- sh -c 'exec systemd-run --user --scope -q python3 "$0"' "$LG_TMP/first.py" 2>/dev/null) KB/s under a 500 cap"
 echo ALL PASSED

@@ -9,11 +9,12 @@ nftables. It requires cgroup v2, a systemd user session, nftables and polkit.
     loadguard list
     loadguard limit firefox --down 500K --up 100K
     loadguard limit steam --down 20Mbit --until-closed
+    loadguard run --down 500K -- wget https://example.org/file
     loadguard clear firefox
 
 Rates are in KB/s (1000 bytes) unless a unit such as `MB` or `Mbit` is given.
 Limits are reapplied when the app or the computer restarts, unless
-`--until-closed` is used. You are asked for your password once per login.
+`--until-closed` or `run` is used. You are asked for your password once per login.
 
 ## Install (Arch)
 

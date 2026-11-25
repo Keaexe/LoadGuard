@@ -119,6 +119,37 @@ fn parse_unit(unit: &str) -> Option<(String, bool)> {
     Some((unescape(&parts.join("-")), true))
 }
 
+/// An app id for a launched program, made of characters that are safe in unit names.
+pub fn launch_id(program: &str, apps: &[App]) -> String {
+    let name = program.rsplit('/').next().unwrap_or_default();
+    let base: String = name
+        .chars()
+        .take(40)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let base = base.trim_start_matches(['.', '-']);
+    let base = if base.is_empty() { "app" } else { base };
+    let taken = |id: &str| apps.iter().any(|a| a.id == id);
+    if !taken(base) {
+        return base.to_owned();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|id| !taken(id))
+        .unwrap_or_default()
+}
+
+/// The scope for an id from [`launch_id`], which [`discover`] maps back to that id.
+pub fn launch_unit(id: &str, pid: u32) -> String {
+    format!("app-loadguard-{}-{pid}.scope", id.replace('-', "\\x2d"))
+}
+
 /// Reverses systemd's `\xNN` escaping.
 fn unescape(s: &str) -> String {
     let b = s.as_bytes();
@@ -198,6 +229,26 @@ mod tests {
             assert_eq!(parse_unit(unit), Some((id.to_owned(), desktop)), "{unit}");
         }
         assert_eq!(parse_unit("dbus.socket"), None);
+    }
+
+    #[test]
+    fn launch_ids_are_unique_and_round_trip() {
+        let app = |id: &str| App {
+            id: id.into(),
+            cgroups: vec![],
+            processes: 1,
+            desktop: true,
+        };
+        assert_eq!(launch_id("/usr/bin/wget", &[]), "wget");
+        assert_eq!(launch_id("wget", &[app("wget"), app("wget-2")]), "wget-3");
+        assert_eq!(launch_id("./a b;\u{e9}@.x", &[]), "a_b___.x");
+        assert_eq!(launch_id("", &[]), "app");
+        for id in ["wget", "wget-2", "my-app.x_y", "flatpak-x"] {
+            assert_eq!(
+                parse_unit(&launch_unit(id, 42)),
+                Some((id.to_owned(), true))
+            );
+        }
     }
 
     #[test]
