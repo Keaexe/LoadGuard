@@ -1,0 +1,18 @@
+[package]
+name = "loadguard-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "loadguard"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+loadguard-core = { path = "../loadguard-core" }
+
+[lints]
+workspace = true
