@@ -95,7 +95,8 @@ speed up 9 >/dev/null; sleep 1; up=$(cat "$LG_TMP/server.py.up" || echo 0)
 between "upload as received, cap 300" "$up" 150 400
 [ "$(grep -c asked "$LG_TMP/polkit.log")" = 1 ] && echo "ok: one password prompt for several changes" || fail "prompts: $(cat "$LG_TMP/polkit.log")"
 
-lg clear $app
+lg clear E2E >/dev/null; out=$(lg list); [[ $out != *"KB/s"* ]] || fail "clear by partial name"
+echo "ok: clear by partial name"
 python3 "$LG_TMP/client.py" down 12 x >"$LG_TMP/live" & live=$!
 sleep 3; lg limit $app -d 500 --until-closed >/dev/null; wait $live
 between "limit applied to an open connection" "$(cat "$LG_TMP/live")" 200 650

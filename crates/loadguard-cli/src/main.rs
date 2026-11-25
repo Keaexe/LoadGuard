@@ -69,7 +69,7 @@ enum Command {
     },
     /// Remove an app's limit, or every limit
     Clear {
-        /// App id, exactly as listed
+        /// App id, or any unambiguous part of it
         #[arg(required_unless_present = "all")]
         app: Option<String>,
         #[arg(long, conflicts_with = "app")]
@@ -206,8 +206,13 @@ fn run(command: Command) -> Result<(), String> {
         } => {
             return Err(launch_in_scope(&id, down, up, &command, &apps()?));
         }
-        Command::Clear { app: Some(id), .. } => {
-            helper()?.clear_limit(&id).map_err(explain)?;
+        Command::Clear {
+            app: Some(query), ..
+        } => {
+            let helper = helper()?;
+            // Saved limits can be cleared even if apps cannot be listed.
+            let id = find_limit(&query, &limits(&helper)?, &apps().unwrap_or_default())?;
+            helper.clear_limit(&id).map_err(explain)?;
             println!("{id}: limit removed");
         }
         Command::Clear { app: None, .. } => {
@@ -292,6 +297,43 @@ fn launch_in_scope(id: &str, down: u64, up: u64, command: &[OsString], apps: &[A
     format!("cannot start {}: {error}", command[0].to_string_lossy())
 }
 
+/// Finds the limit meant by `query`: an exact id, then an exact name of a limited
+/// app in any case, then an unambiguous part of one.
+fn find_limit(query: &str, limits: &Limits, apps: &[App]) -> Result<String, String> {
+    if limits.contains_key(query) {
+        return Ok(query.to_owned());
+    }
+    if query.is_empty() {
+        return Err("the app name is empty".into());
+    }
+    let query_lower = query.to_lowercase();
+    let matching = |test: &dyn Fn(&str) -> bool| -> Vec<&String> {
+        limits
+            .keys()
+            .filter(|id| {
+                let mut names = vec![id.as_str()];
+                for app in apps.iter().filter(|a| a.answers_to(id)) {
+                    names.push(&app.id);
+                    names.extend(app.aliases.iter().map(String::as_str));
+                }
+                names.iter().any(|n| test(&n.to_lowercase()))
+            })
+            .collect()
+    };
+    let mut hits = matching(&|name| name == query_lower);
+    if hits.is_empty() {
+        hits = matching(&|name| name.contains(&query_lower));
+    }
+    match hits[..] {
+        [id] => Ok(id.clone()),
+        [] => Err(format!("no limit matches '{query}' (see `loadguard list`)")),
+        _ => {
+            let ids: Vec<_> = hits.iter().map(|id| id.as_str()).collect();
+            Err(format!("'{query}' is ambiguous: {}", ids.join(", ")))
+        }
+    }
+}
+
 fn rules(uid: u32, limits: &Limits, apps: &[App]) -> String {
     let entries: Vec<_> = limits
         .iter()
@@ -341,5 +383,38 @@ fn list(apps: &[App], limits: &Limits, all: bool) {
         if !apps.iter().any(|a| a.answers_to(id)) {
             row(id, 0, Some(entry));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_limit_to_clear() {
+        let limits: Limits = ["beeper.appimage", "steam", "steam-app1", "org.x.Closed"]
+            .map(|id| (id.to_owned(), (Limit::default(), false)))
+            .into();
+        let apps = [
+            App {
+                id: "beeper.appimage".into(),
+                aliases: vec!["Beeper".into(), "Chat".into()],
+                ..App::default()
+            },
+            App {
+                id: "zen".into(),
+                ..App::default()
+            },
+        ];
+        let find = |q| find_limit(q, &limits, &apps);
+        assert_eq!(find("beeper").unwrap(), "beeper.appimage");
+        assert_eq!(find("chat").unwrap(), "beeper.appimage");
+        assert_eq!(find("steam").unwrap(), "steam");
+        assert_eq!(find("STEAM").unwrap(), "steam");
+        assert_eq!(find("app1").unwrap(), "steam-app1");
+        assert_eq!(find("closed").unwrap(), "org.x.Closed");
+        assert!(find("stea").unwrap_err().contains("ambiguous"));
+        assert!(find("zen").is_err(), "running, but not limited");
+        assert!(find("").unwrap_err().contains("empty"));
     }
 }
