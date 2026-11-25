@@ -148,4 +148,22 @@ echo "ok: nothing is launched when the helper is unavailable"
 kill $pk; wait $pk 2>/dev/null || true; polkit allow; start_helper
 esc=$(lg run -d 500 -- systemd-run 2>&1 || true); [[ $esc == *"outside its own group"* ]] || fail "systemd-run accepted"
 echo "info: self-moving program gets $(lg run -d 500 -- sh -c 'exec systemd-run --user --scope -q python3 "$0"' "$LG_TMP/first.py" 2>/dev/null) KB/s under a 500 cap"
+# The way Chromium and Electron move: the main process leaves, its child stays.
+cat >"$LG_TMP/mover.py" <<'P'
+import os, subprocess, sys, time
+sys.stdin.close()
+child = os.fork()
+if child == 0:
+    time.sleep(12); os._exit(0)
+unit = f"app-lgmover-{os.getpid()}.scope"
+subprocess.run(["busctl", "--user", "-q", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+    "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))", unit, "fail",
+    "2", "PIDs", "au", "1", str(os.getpid()), "Slice", "s", "app.slice", "0"], check=True)
+time.sleep(3)
+print(unit in open("/proc/self/cgroup").read(), flush=True)
+os.execvp("python3", ["python3", sys.argv[1], "down", "8", "x"])
+P
+out=$(lg run -d 500 -- python3 "$LG_TMP/mover.py" "$LG_TMP/client.py" 2>&1)
+[[ $out == True* ]] || fail "mover did not move: $out"
+between "app that moves its main process, cap 500" "$(tail -n1 <<<"$out")" 200 650
 echo ALL PASSED

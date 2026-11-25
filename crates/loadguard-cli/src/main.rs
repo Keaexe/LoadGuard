@@ -238,9 +238,7 @@ fn launch(
     let mut taken = apps.to_vec();
     taken.extend(limits.keys().map(|id| App {
         id: id.clone(),
-        cgroups: Vec::new(),
-        processes: 0,
-        desktop: true,
+        ..App::default()
     }));
     let id = apps::launch_id(&program, &taken);
     if apps.iter().any(|a| a.id.eq_ignore_ascii_case(name)) {
@@ -281,7 +279,7 @@ fn launch_in_scope(id: &str, down: u64, up: u64, command: &[OsString], apps: &[A
     let own = own.trim().strip_prefix("0::/").unwrap_or_default();
     let covered = apps
         .iter()
-        .any(|a| a.id == id && a.cgroups.iter().any(|c| c.as_str() == own));
+        .any(|a| a.answers_to(id) && a.cgroups.iter().any(|c| c.as_str() == own));
     if !covered {
         return "could not enter a separate group, so nothing was launched".into();
     }
@@ -298,7 +296,7 @@ fn rules(uid: u32, limits: &Limits, apps: &[App]) -> String {
     let entries: Vec<_> = limits
         .iter()
         .filter_map(|(id, (limit, _))| {
-            let app = apps.iter().find(|a| &a.id == id)?;
+            let app = apps.iter().find(|a| a.answers_to(id))?;
             Some(nft::Entry {
                 cgroups: app.cgroups.clone(),
                 limit: *limit,
@@ -313,29 +311,35 @@ fn show(rate: Option<Rate>) -> String {
 }
 
 fn list(apps: &[App], limits: &Limits, all: bool) {
-    let row = |id: &str, procs: usize| {
-        let (down, up, kept) = match limits.get(id) {
-            Some((l, temp)) => (
-                show(l.down),
-                show(l.up),
-                if *temp { "until closed" } else { "always" },
-            ),
+    let row = |name: &str, procs: usize, entry: Option<&(Limit, bool)>| {
+        let (down, up, kept) = match entry {
+            Some((l, temp)) => {
+                let kept = if *temp { "until closed" } else { "always" };
+                (show(l.down), show(l.up), kept)
+            }
             None => ("-".into(), "-".into(), ""),
         };
-        let line = format!("{id:<40} {procs:>5} {down:>12} {up:>12}  {kept}");
+        let line = format!("{name:<40} {procs:>5} {down:>12} {up:>12}  {kept}");
         println!("{}", line.trim_end());
     };
     println!("{:<40} {:>5} {:>12} {:>12}", "APP", "PROCS", "DOWN", "UP");
-    for app in apps
-        .iter()
-        .filter(|a| all || a.desktop || limits.contains_key(&a.id))
-    {
-        row(&app.id, app.processes);
+    for app in apps {
+        // A limit saved under an alias gets its own row, named as it must be cleared.
+        let mut own: Vec<_> = limits.iter().filter(|(id, _)| app.answers_to(id)).collect();
+        own.sort_by_key(|(id, _)| **id != app.id);
+        if own.is_empty() && (all || app.desktop) {
+            row(&app.id, app.processes, None);
+        }
+        for (id, entry) in own {
+            row(id, app.processes, Some(entry));
+        }
+        if !app.aliases.is_empty() && (all || app.desktop) {
+            println!("  also covers: {}", app.aliases.join(", "));
+        }
     }
-    for id in limits
-        .keys()
-        .filter(|id| !apps.iter().any(|a| &a.id == *id))
-    {
-        row(id, 0);
+    for (id, entry) in limits {
+        if !apps.iter().any(|a| a.answers_to(id)) {
+            row(id, 0, Some(entry));
+        }
     }
 }

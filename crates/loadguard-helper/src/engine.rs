@@ -94,7 +94,7 @@ impl<F: Firewall> Engine<F> {
 
     pub fn set(&mut self, uid: u32, app: &str, entry: Entry) -> Result<(), String> {
         validate_id(app)?;
-        if entry.until_closed && !self.discover(uid).iter().any(|a| a.id == app) {
+        if entry.until_closed && !self.discover(uid).iter().any(|a| a.answers_to(app)) {
             return Err(format!("'{app}' is not running"));
         }
         self.change(uid, |limits| {
@@ -186,12 +186,12 @@ impl<F: Firewall> Engine<F> {
             return Ok(());
         };
         user.limits
-            .retain(|id, e| !e.until_closed || apps.iter().any(|a| &a.id == id));
+            .retain(|id, e| !e.until_closed || apps.iter().any(|a| a.answers_to(id)));
         let wanted: Vec<nft::Entry> = user
             .limits
             .iter()
             .filter_map(|(id, e)| {
-                let app = apps.iter().find(|a| &a.id == id)?;
+                let app = apps.iter().find(|a| a.answers_to(id))?;
                 Some(nft::Entry {
                     cgroups: app.cgroups.clone(),
                     limit: e.limit,

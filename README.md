@@ -23,6 +23,7 @@ Limits are reapplied when the app or the computer restarts, unless
 
 ## Development
 
+    cargo run --bin loadguard -- list
     cargo test
     scripts/test-limits.sh   # generated rules, in an isolated namespace
     scripts/test-helper.sh   # real helper and CLI, end to end; no root needed
