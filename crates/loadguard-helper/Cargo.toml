@@ -1,0 +1,16 @@
+[package]
+name = "loadguard-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+loadguard-core = { path = "../loadguard-core" }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+zbus = "5"
+
+[lints]
+workspace = true

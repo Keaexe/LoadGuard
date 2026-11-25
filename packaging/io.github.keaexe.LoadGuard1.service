@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=io.github.keaexe.LoadGuard1
+Exec=/usr/bin/false
+User=root
+SystemdService=loadguard.service

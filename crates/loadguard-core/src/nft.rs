@@ -4,22 +4,26 @@
 use crate::{CgroupPath, Limit, Rate};
 use std::fmt::Write;
 
-pub const TABLE: &str = "inet loadguard";
+/// Each user has a separate table, so one user cannot break another's rules.
+pub fn table(uid: u32) -> String {
+    format!("inet loadguard_{uid}")
+}
 
 /// A limit and every cgroup that shares it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub cgroups: Vec<CgroupPath>,
     pub limit: Limit,
 }
 
-/// Removes every LoadGuard rule; succeeds even if there are none.
-pub fn clear() -> String {
-    format!("add table {TABLE}\ndelete table {TABLE}\n")
+/// Removes every LoadGuard rule of a user; succeeds even if there are none.
+pub fn clear(uid: u32) -> String {
+    let table = table(uid);
+    format!("add table {table}\ndelete table {table}\n")
 }
 
 /// `exempt_loopback` leaves localhost traffic alone; only tests disable it.
-pub fn ruleset(entries: &[Entry], exempt_loopback: bool) -> String {
+pub fn ruleset(uid: u32, entries: &[Entry], exempt_loopback: bool) -> String {
     let mut chains = String::new();
     let mut input = String::new();
     let mut output = String::new();
@@ -47,8 +51,8 @@ pub fn ruleset(entries: &[Entry], exempt_loopback: bool) -> String {
         }
     }
 
-    let mut out = clear();
-    let _ = writeln!(out, "table {TABLE} {{");
+    let mut out = clear(uid);
+    let _ = writeln!(out, "table {} {{", table(uid));
     out += &chains;
     for (name, rules, lo) in [("input", input, "iif"), ("output", output, "oif")] {
         let _ = writeln!(
@@ -87,6 +91,7 @@ mod tests {
     #[test]
     fn cgroups_of_one_app_share_a_chain() {
         let r = ruleset(
+            1000,
             &[entry(Limit {
                 down: "500".parse().ok(),
                 up: None,
@@ -101,12 +106,12 @@ mod tests {
 
     #[test]
     fn only_touches_its_own_table() {
-        let r = ruleset(&[], true);
+        let r = ruleset(1000, &[], true);
         assert!(!r.contains("flush"));
         assert!(
             r.lines()
                 .filter(|l| l.contains("table"))
-                .all(|l| l.contains(TABLE))
+                .all(|l| l.contains("inet loadguard_1000"))
         );
     }
 }

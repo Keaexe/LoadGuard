@@ -2,6 +2,7 @@
 
 pub mod apps;
 pub mod cgroup;
+pub mod client;
 pub mod config;
 pub mod nft;
 pub mod rate;

@@ -5,6 +5,10 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
+/// Users control the tree below their app slice, and the root helper walks it.
+const MAX_DEPTH: usize = 16;
+const MAX_CGROUPS_PER_APP: usize = 64;
+
 /// One app, possibly spread over several cgroups.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
@@ -18,11 +22,20 @@ pub struct App {
 /// Lists apps with at least one process. `root` is normally [`CGROUP_ROOT`].
 pub fn discover(root: &Path, uid: u32) -> io::Result<Vec<App>> {
     let mut found = BTreeMap::new();
-    scan(root, &app_slice(uid), uid, &mut found)?;
+    scan(root, &app_slice(uid), uid, 0, &mut found)?;
     Ok(found.into_values().collect())
 }
 
-fn scan(root: &Path, rel: &str, uid: u32, found: &mut BTreeMap<String, App>) -> io::Result<()> {
+fn scan(
+    root: &Path,
+    rel: &str,
+    uid: u32,
+    depth: usize,
+    found: &mut BTreeMap<String, App>,
+) -> io::Result<()> {
+    if depth > MAX_DEPTH {
+        return Ok(());
+    }
     for entry in fs::read_dir(root.join(rel))? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
@@ -34,13 +47,13 @@ fn scan(root: &Path, rel: &str, uid: u32, found: &mut BTreeMap<String, App>) -> 
         let path = format!("{rel}/{name}");
         if name.ends_with(".slice") {
             // Units come and go while we scan, so a vanished slice is not an error.
-            let _ = scan(root, &path, uid, found);
+            let _ = scan(root, &path, uid, depth + 1, found);
             continue;
         }
         let Some((id, desktop)) = parse_unit(&name) else {
             continue;
         };
-        let processes = count_processes(&entry.path());
+        let processes = count_processes(&entry.path(), 0);
         let Ok(cgroup) = CgroupPath::for_user(&path, uid) else {
             continue;
         };
@@ -53,7 +66,9 @@ fn scan(root: &Path, rel: &str, uid: u32, found: &mut BTreeMap<String, App>) -> 
             processes: 0,
             desktop,
         });
-        app.cgroups.push(cgroup);
+        if app.cgroups.len() < MAX_CGROUPS_PER_APP {
+            app.cgroups.push(cgroup);
+        }
         app.processes += processes;
         app.desktop |= desktop;
         app.cgroups.sort();
@@ -61,13 +76,16 @@ fn scan(root: &Path, rel: &str, uid: u32, found: &mut BTreeMap<String, App>) -> 
     Ok(())
 }
 
-fn count_processes(dir: &Path) -> usize {
+fn count_processes(dir: &Path, depth: usize) -> usize {
+    if depth > MAX_DEPTH {
+        return 0;
+    }
     let own = fs::read_to_string(dir.join("cgroup.procs")).map_or(0, |s| s.lines().count());
     let nested: usize = fs::read_dir(dir).map_or(0, |entries| {
         entries
             .flatten()
             .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .map(|e| count_processes(&e.path()))
+            .map(|e| count_processes(&e.path(), depth + 1))
             .sum()
     });
     own + nested

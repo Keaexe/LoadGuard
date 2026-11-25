@@ -1,17 +1,27 @@
 # LoadGuard
 
 Limit the download and upload speed of individual Linux apps, including ones
-already running. **Early development: the CLI can plan and save limits, but not apply them yet.**
+already running. Early development.
 
-LoadGuard finds apps through their systemd cgroups and generates nftables rules
-for them. It requires cgroup v2, a systemd user session and nftables.
+LoadGuard finds apps through their systemd cgroups and limits them with
+nftables. It requires cgroup v2, a systemd user session, nftables and polkit.
 
-    cargo run -- list
-    cargo run -- limit firefox --down 500K --up 100K --dry-run
+    loadguard list
+    loadguard limit firefox --down 500K --up 100K
+    loadguard limit steam --down 20Mbit --until-closed
+    loadguard clear firefox
 
 Rates are in KB/s (1000 bytes) unless a unit such as `MB` or `Mbit` is given.
+Limits are reapplied when the app or the computer restarts, unless
+`--until-closed` is used. You are asked for your password once per login.
+
+## Install (Arch)
+
+    cd packaging/arch && makepkg -si
+    sudo systemctl enable --now loadguard   # reapplies limits at boot
 
 ## Development
 
     cargo test
-    scripts/test-limits.sh   # measures real limits in an isolated namespace, no root
+    scripts/test-limits.sh   # generated rules, in an isolated namespace
+    scripts/test-helper.sh   # real helper and CLI, end to end; no root needed

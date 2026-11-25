@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 loadguard-core = { path = "../loadguard-core" }
+zbus = "5"
 
 [lints]
 workspace = true

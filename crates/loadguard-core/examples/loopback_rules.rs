@@ -25,6 +25,6 @@ fn main() -> Result<(), String> {
         cgroups: vec![CgroupPath::for_user(path, uid)?],
         limit,
     };
-    print!("{}", nft::ruleset(&[entry], false));
+    print!("{}", nft::ruleset(uid, &[entry], false));
     Ok(())
 }

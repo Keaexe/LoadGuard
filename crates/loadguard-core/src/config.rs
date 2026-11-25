@@ -1,19 +1,15 @@
-//! User configuration, stored in `$XDG_CONFIG_HOME/loadguard/config.toml`.
+//! User preferences (limits live in the helper), stored in `$XDG_CONFIG_HOME/loadguard/config.toml`.
 
-use crate::Limit;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     env, fs, io,
     path::{Path, PathBuf},
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub backends: Backends,
-    /// Saved limits, keyed by app id.
-    pub apps: BTreeMap<String, Limit>,
 }
 
 /// On/off switch for each backend.
@@ -50,18 +46,6 @@ impl Config {
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
     }
-
-    /// Writes to a temporary file and renames, so a crash cannot truncate it.
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        let err = |e: io::Error| format!("{}: {e}", path.display());
-        let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(err)?;
-        }
-        let tmp = path.with_extension(format!("toml.{}", std::process::id()));
-        fs::write(&tmp, text).map_err(err)?;
-        fs::rename(&tmp, path).map_err(err)
-    }
 }
 
 #[cfg(test)]
@@ -69,26 +53,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trips_and_handles_missing_file() {
-        let dir = env::temp_dir().join(format!("loadguard-test-{}", std::process::id()));
-        let path = dir.join("sub/config.toml");
-        assert_eq!(Config::load(&path).unwrap(), Config::default());
-        let mut c = Config::default();
-        c.apps.insert(
-            "org.x.Y".into(),
-            Limit {
-                down: "1.5M".parse().ok(),
-                up: None,
-            },
+    fn backend_switch() {
+        assert!(
+            Config::load(Path::new("/nonexistent"))
+                .unwrap()
+                .backends
+                .nftables
         );
-        c.save(&path).unwrap();
-        assert_eq!(Config::load(&path).unwrap(), c);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn rejects_invalid_content() {
-        assert!(toml::from_str::<Config>("[apps.x]\ndown = \"0\"").is_err());
-        assert!(toml::from_str::<Config>("[apps.x]\ndwon = \"5M\"").is_err());
+        let c: Config = toml::from_str("[backends]\nnftables = false").unwrap();
+        assert!(!c.backends.nftables);
+        assert!(toml::from_str::<Config>("[backends]\ntypo = true").is_err());
     }
 }
