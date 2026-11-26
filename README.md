@@ -9,7 +9,7 @@ nftables. It requires cgroup v2, a systemd user session, nftables and polkit.
     loadguard-gui
 
 It can launch apps with a limit and lives in the system tray when the desktop
-has one. Or from a terminal:
+has one, optionally starting there at login. Or from a terminal:
 
     loadguard list
     loadguard limit firefox --down 500K --up 100K

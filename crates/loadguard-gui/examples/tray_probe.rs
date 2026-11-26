@@ -95,6 +95,11 @@ fn main() -> zbus::Result<()> {
         tooltip.2,
         pixmaps.first().map(|p| (p.0, p.1))
     );
+    if let Some(go) = std::env::args().nth(2) {
+        while !std::path::Path::new(&go).exists() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     let menu_path: zbus::zvariant::OwnedObjectPath = sni.get_property("Menu")?;
     let menu = Proxy::new(
         &conn,
@@ -108,11 +113,6 @@ fn main() -> zbus::Result<()> {
     labels(&layout, &mut entries);
     for (_, label, enabled) in &entries {
         println!("menu: {label}{}", if *enabled { "" } else { " (disabled)" });
-    }
-    if let Some(go) = std::env::args().nth(2) {
-        while !std::path::Path::new(&go).exists() {
-            std::thread::sleep(Duration::from_millis(100));
-        }
     }
     let id = entries
         .iter()

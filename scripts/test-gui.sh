@@ -39,8 +39,32 @@ touch "$LG_TMP/go"
 wait "$probe" || fail "tray probe: $(cat "$LG_TMP/probe.log")"
 cat "$LG_TMP/probe.log"
 grep -q 'menu: Clear all limits… (disabled)' "$LG_TMP/probe.log" || fail "clear all should be disabled without limits"
+grep -q '^menu: LoadGuard: helper unavailable' "$LG_TMP/probe.log" || fail "the window never received a status update"
 for _ in $(seq 20); do kill -0 "$gui" 2>/dev/null || break; sleep 0.25; done
 kill -0 "$gui" 2>/dev/null && fail "Quit in the tray did not quit"
 wait "$gui" || fail "GUI exit status $?: $(cat "$LG_TMP/gui.log")"
 echo "ok: tray menu quits the app"
+# Started at login before any panel: waits, then gives up quietly.
+start=$SECONDS; timeout 45 "$bin/loadguard-gui" --hidden >"$LG_TMP/hidden.log" 2>&1 || fail "--hidden without a tray: status $?"
+[ $((SECONDS - start)) -ge 29 ] || fail "--hidden gave up without waiting for a panel"
+echo "ok: --hidden waits for a tray, then exits quietly"
+# Started at login: the panel appears a few seconds later. No window may exist
+# until the user opens one from the tray (Wayland's log lists every window).
+WAYLAND_DEBUG=client "$bin/loadguard-gui" --hidden >"$LG_TMP/hidden2.log" 2>&1 & gui=$!; pids+=($gui)
+sleep 5
+command rm -f "$LG_TMP/go"
+"$bin/examples/tray_probe" "Open LoadGuard" "$LG_TMP/go" >"$LG_TMP/probe2.log" 2>&1 & probe=$!; pids+=($probe)
+sleep 4
+windows() { grep -c 'get_toplevel(' "$LG_TMP/hidden2.log" || true; }
+[ "$(windows)" = 0 ] || fail "--hidden created a window before it was asked for"
+grep -q '^title=' "$LG_TMP/probe2.log" || fail "tray did not appear for --hidden: $(cat "$LG_TMP/probe2.log")"
+touch "$LG_TMP/go"; wait "$probe" || fail "tray probe: $(cat "$LG_TMP/probe2.log")"
+# Without a system bus the helper is unavailable; anything else means the
+# window never received a status update.
+grep -q '^menu: LoadGuard: helper unavailable' "$LG_TMP/probe2.log" || fail "--hidden never updated its status: $(cat "$LG_TMP/probe2.log")"
+echo "ok: --hidden waits for a panel, opens no window, and keeps its status current"
+sleep 2
+[ "$(windows)" -ge 1 ] || fail "Open LoadGuard did not open the window"
+kill -0 "$gui" || fail "GUI died after opening its window"
+echo "ok: Open LoadGuard in the tray opens the window"
 echo ALL PASSED

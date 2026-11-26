@@ -12,7 +12,8 @@ fn main() -> ExitCode {
             Err(launch::enter(&stage, uid))
         })
     } else {
-        loadguard_gui::controller::run()
+        // --hidden: started at login; stay in the tray.
+        loadguard_gui::controller::run(args.get(1).is_some_and(|a| a == "--hidden"))
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

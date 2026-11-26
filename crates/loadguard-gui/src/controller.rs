@@ -56,9 +56,10 @@ pub struct Plan {
 }
 
 impl Controller {
-    pub fn new(window: &MainWindow, entries: Entries, config: &Config) -> Self {
+    /// `window` may be empty: the tray works without one.
+    pub fn new(window: Weak<MainWindow>, entries: Entries, config: &Config) -> Self {
         Self {
-            window: window.as_weak(),
+            window,
             entries,
             icons: HashMap::new(),
             snapshot: Snapshot {
@@ -83,6 +84,8 @@ impl Controller {
 
     /// Redraws the lists only if they changed, which keeps focus and scrolling.
     pub fn refresh(&mut self) {
+        let up = matches!(self.snapshot.helper, Helper::Running(_));
+        self.refresh_tray(up);
         let Some(w) = self.window.upgrade() else {
             return;
         };
@@ -97,7 +100,6 @@ impl Controller {
             }
             self.shown = shown;
         }
-        let up = matches!(self.snapshot.helper, Helper::Running(_));
         w.set_can_edit(up && self.backend_on);
         w.set_can_start(self.backend_on && !up);
         let status = match &self.snapshot.helper {
@@ -111,7 +113,13 @@ impl Controller {
         w.set_unit_label(self.unit.label().into());
         w.set_show_all(self.all);
         w.set_searching(!self.search.trim().is_empty());
-        self.refresh_tray(up);
+    }
+
+    /// Connects a newly built window and fills it.
+    pub fn attach(&mut self, window: &MainWindow) {
+        self.window = window.as_weak();
+        self.shown = None;
+        self.refresh();
     }
 
     fn refresh_tray(&self, up: bool) {
@@ -134,6 +142,9 @@ impl Controller {
             })
             .collect();
         let summary = match (up, lines.len()) {
+            (false, _) if matches!(self.snapshot.helper, Helper::Failed(_)) => {
+                "LoadGuard: helper unavailable".to_owned()
+            }
             (false, _) => "LoadGuard: helper not running".to_owned(),
             (true, 0) => "No app is limited".into(),
             (true, 1) => "1 app limited".into(),
@@ -142,12 +153,6 @@ impl Controller {
         tray.set_summary(summary.into());
         tray.set_limits(ModelRc::new(VecModel::from(lines)));
         tray.set_can_edit(up && self.backend_on);
-    }
-
-    pub fn show_window(&self) {
-        if let Some(w) = self.window.upgrade() {
-            let _ = w.show();
-        }
     }
 
     pub fn open_launch(&mut self) {
@@ -399,11 +404,18 @@ fn spawn_poller(uid: u32) -> Poke {
                 helper = client::connect();
             }
             let snapshot = take_snapshot(uid, &helper, start);
-            let sent = slint::invoke_from_event_loop(move || {
-                with(|c| c.update(snapshot));
-            });
-            if sent.is_err() {
-                return;
+            // The event loop may not exist yet at startup; only its end stops polling.
+            loop {
+                let copy = snapshot.clone();
+                match slint::invoke_from_event_loop(move || {
+                    with(|c| c.update(copy));
+                }) {
+                    Ok(()) => break,
+                    Err(slint::EventLoopError::NoEventLoopProvider) => {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(_) => return,
+                }
             }
             start = match rx.recv_timeout(POLL) {
                 Ok(start) => start,
@@ -563,7 +575,7 @@ impl Instance {
     /// Shows the window of the running copy.
     fn activate(&self) {
         let _ = slint::invoke_from_event_loop(|| {
-            with(|c| c.show_window());
+            show_window();
         });
     }
 }
@@ -597,22 +609,52 @@ fn claim_instance() -> Option<Option<zbus::blocking::Connection>> {
     }
 }
 
-pub fn run() -> Result<(), String> {
-    let Some(_instance) = claim_instance() else {
-        return Ok(());
-    };
-    let path = Config::default_path().ok_or("cannot locate the configuration directory")?;
-    let config = Config::load(&path)?;
-    let uid = std::fs::metadata("/proc/self")
-        .map_err(|e| e.to_string())?
-        .uid();
-    // Links the window to its desktop entry.
-    let _ = slint::set_xdg_app_id("io.github.keaexe.LoadGuard");
+/// Waits for a panel, which may start after LoadGuard at login.
+fn wait_for_tray(seconds: u32) -> bool {
+    for _ in 0..seconds {
+        if tray_host_available() {
+            return true;
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    tray_host_available()
+}
+
+/// What building the window needs; kept so it can be built when first shown.
+struct Setup {
+    poke: Poke,
+    config_path: PathBuf,
+}
+
+thread_local! {
+    static SETUP: RefCell<Option<Setup>> = const { RefCell::new(None) };
+    /// Built only when first shown: an existing window would appear as an
+    /// empty one while LoadGuard sits in the tray.
+    static WINDOW: RefCell<Option<MainWindow>> = const { RefCell::new(None) };
+}
+
+/// Shows the window, building it first if needed.
+pub fn show_window() -> Option<MainWindow> {
+    if WINDOW.with(|w| w.borrow().is_none()) {
+        let window = SETUP.with(|s| s.borrow().as_ref().map(build_window))?;
+        match window {
+            Ok(window) => WINDOW.with(|w| *w.borrow_mut() = Some(window)),
+            Err(e) => {
+                eprintln!("error: cannot open the window: {e}");
+                return None;
+            }
+        }
+    }
+    let window = WINDOW.with(|w| w.borrow().as_ref().map(ComponentHandle::clone_strong))?;
+    let _ = window.show();
+    Some(window)
+}
+
+fn build_window(setup: &Setup) -> Result<MainWindow, String> {
     let window = MainWindow::new().map_err(|e| e.to_string())?;
-    let controller = Controller::new(&window, Entries::load(), &config);
-    CONTROLLER.with(|c| *c.borrow_mut() = Some(controller));
-    with(Controller::refresh);
-    let poke = spawn_poller(uid);
+    with(|c| c.attach(&window));
+    let poke = setup.poke.clone();
+    let path = setup.config_path.clone();
     let weak = Rc::new(window.as_weak());
 
     window.on_search(|text| {
@@ -670,13 +712,13 @@ pub fn run() -> Result<(), String> {
     window.on_remove(move |id| {
         act(&w, &p, move |h| h.clear_limit(&id).map_err(client::explain));
     });
-    let (w, p) = (weak, poke.clone());
+    let (w, p) = (weak.clone(), poke.clone());
     window.on_clear_all(move || act(&w, &p, |h| h.clear_all().map_err(client::explain)));
 
     window.on_open_launch(|| with(Controller::open_launch).unwrap_or_default());
     window.on_launch_search(|text| with(|c| c.launch_search(&text)).unwrap_or_default());
     window.on_launch_changed(|| with(Controller::launch_changed).unwrap_or_default());
-    let (w, p) = (Rc::new(window.as_weak()), poke.clone());
+    let (w, p) = (weak, poke);
     window.on_launch_start(move || {
         let Some(win) = w.upgrade() else { return };
         if win.get_busy() {
@@ -689,28 +731,73 @@ pub fn run() -> Result<(), String> {
         }
     });
 
-    // Without a panel to hold the icon, closing the window quits.
-    let tray = if tray_host_available() {
-        Tray::new().ok()
-    } else {
-        None
+    if let Some(path) = crate::autostart::path() {
+        window.set_autostart(crate::autostart::is_enabled(&path));
+        let w = window.as_weak();
+        window.on_set_autostart(move |on| {
+            let Some(w) = w.upgrade() else { return };
+            let result = env::current_exe()
+                .map_err(|e| e.to_string())
+                .and_then(|exe| crate::autostart::set(&path, on, &exe));
+            if let Err(e) = result {
+                w.set_error(e.into());
+            }
+            w.set_autostart(crate::autostart::is_enabled(&path));
+        });
+    }
+    Ok(window)
+}
+
+pub fn run(hidden: bool) -> Result<(), String> {
+    let Some(_instance) = claim_instance() else {
+        return Ok(());
     };
+    let path = Config::default_path().ok_or("cannot locate the configuration directory")?;
+    let config = Config::load(&path)?;
+    let uid = std::fs::metadata("/proc/self")
+        .map_err(|e| e.to_string())?
+        .uid();
+
+    // Without a panel to hold the icon, closing the window quits.
+    let has_tray = if hidden {
+        wait_for_tray(30)
+    } else {
+        tray_host_available()
+    };
+    if hidden && !has_tray {
+        // Limits keep working without the GUI; there is just nowhere to show it.
+        eprintln!("note: no system tray appeared, so LoadGuard is not staying in the background");
+        return Ok(());
+    }
+
+    // Links the window to its desktop entry.
+    let _ = slint::set_xdg_app_id("io.github.keaexe.LoadGuard");
+    let controller = Controller::new(Weak::default(), Entries::load(), &config);
+    CONTROLLER.with(|c| *c.borrow_mut() = Some(controller));
+    let poke = spawn_poller(uid);
+    SETUP.with(|s| {
+        *s.borrow_mut() = Some(Setup {
+            poke,
+            config_path: path,
+        })
+    });
+
+    let tray = if has_tray { Tray::new().ok() } else { None };
     if let Some(tray) = &tray {
         with(|c| {
             c.tray = Some(tray.as_weak());
             c.refresh();
         });
-        tray.on_open(|| with(|c| c.show_window()).unwrap_or_default());
-        tray.on_launch(|| {
-            with(|c| {
-                c.show_window();
-                c.open_launch();
-            });
+        tray.on_open(|| {
+            show_window();
         });
-        let w = window.as_weak();
-        tray.on_clear_all(move || {
-            with(|c| c.show_window());
-            if let Some(w) = w.upgrade() {
+        tray.on_launch(|| {
+            if show_window().is_some() {
+                with(Controller::open_launch);
+            }
+        });
+        tray.on_clear_all(|| {
+            if let Some(w) = show_window() {
                 w.set_confirm_open(true);
             }
         });
@@ -718,6 +805,8 @@ pub fn run() -> Result<(), String> {
             let _ = slint::quit_event_loop();
         });
     }
-    window.show().map_err(|e| e.to_string())?;
+    if !hidden || tray.is_none() {
+        show_window().ok_or("cannot open the window")?;
+    }
     slint::run_event_loop().map_err(|e| e.to_string())
 }

@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     };
     let c = Rc::new(RefCell::new(Controller::new(
-        &w,
+        w.as_weak(),
         Entries::load(),
         &Config::default(),
     )));
@@ -116,6 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let count = cleared.clone();
     w.on_clear_all(move || *count.borrow_mut() += 1);
 
+    w.set_autostart(true);
     shots.take("main");
 
     c.borrow_mut().open("beeper.appimage");
@@ -172,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unit: Unit::MegaBits,
         ..Config::default()
     };
-    *c.borrow_mut() = Controller::new(&w, Entries::load(), &config);
+    *c.borrow_mut() = Controller::new(w.as_weak(), Entries::load(), &config);
     c.borrow_mut().update(running);
     adapter.set_size(PhysicalSize::new(560, 480));
     shots.take("small");
@@ -202,7 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         launcher("Shell", &["sh", "-c", "exit"], None),
         launcher("Zen Browser", &["/usr/bin/zen"], None),
     ];
-    *c.borrow_mut() = Controller::new(&w, entries, &Config::default());
+    *c.borrow_mut() = Controller::new(w.as_weak(), entries, &Config::default());
     let mut snapshot = Snapshot {
         apps: vec![app("sh", 1, &[])],
         ..Snapshot {
@@ -261,7 +262,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     shots.take("launch-command");
     w.set_launch_mode(0);
     shots.take("launch-back");
-    assert_eq!(w.get_launch_rows().row_count(), 3, "a fresh search field shows every app");
+    assert_eq!(
+        w.get_launch_rows().row_count(),
+        3,
+        "a fresh search field shows every app"
+    );
     adapter.set_size(PhysicalSize::new(560, 480));
     shots.take("launch-small");
     adapter.set_size(PhysicalSize::new(820, 640));

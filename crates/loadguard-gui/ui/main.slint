@@ -429,6 +429,8 @@ export component MainWindow inherits Window {
     in-out property <string> launch-up-text;
     in property <string> launch-warning;
     in-out property <string> launch-error;
+    in-out property <bool> autostart;
+    callback set-autostart(bool);
     callback open-launch();
     callback launch-search(string);
     callback launch-changed();
@@ -503,6 +505,11 @@ export component MainWindow inherits Window {
                 spacing: 10px;
                 Text { text: root.status; color: root.can-edit ? Theme.muted : Theme.danger; font-size: 12.5px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                 if root.can-start: Button { text: "Start helper"; clicked => { root.start-helper(); } }
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout { alignment: center; Toggle { checked <=> root.autostart; label: "Start at login"; toggled => { root.set-autostart(self.checked); } } }
+                    Text { text: "Start at login"; color: Theme.muted; font-size: 12.5px; vertical-alignment: center; }
+                }
                 Button { text: root.show-all ? "Hide background services" : "Show background services"; link: true; clicked => { root.toggle-all(); } }
             }
         }
