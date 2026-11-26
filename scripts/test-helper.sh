@@ -131,6 +131,18 @@ lg limit $app -d 5000 --always >/dev/null
 between "run, cap 500, from the first byte" "$(lg run -d 500 -- python3 "$LG_TMP/first.py" 2>/dev/null)" 200 700
 [ "$(lg run -d 500 -- sh -c 'echo "$1|$2"; exit 7' x 'a b' '$HOME %n'; echo $?)" = $'a b|$HOME %n\n7' ] || fail "run arguments or exit code"
 echo "ok: run keeps arguments and exit code"
+# The GUI binary's second stage, which reports back through a file.
+gui_stage() {
+    systemd-run --user --scope -q --collect --slice=app.slice --expand-environment=no \
+        --unit="app-loadguard-gui\\x2dtest-$RANDOM.scope" -- \
+        "$bin/loadguard-gui" run-in-scope --id=gui-test --down=500000 --up=0 \
+        "--report=$LG_TMP/report" -- "$@"
+}
+between "GUI launch, cap 500, from the first byte" "$(gui_stage python3 "$LG_TMP/first.py" 2>/dev/null)" 200 700
+[ "$(cat "$LG_TMP/report")" = ok ] || fail "GUI launch report: $(cat "$LG_TMP/report")"
+gui_stage no-such-program-lg 2>/dev/null && fail "missing program launched"
+grep -q 'was not found' "$LG_TMP/report" || fail "missing program report: $(cat "$LG_TMP/report")"
+echo "ok: GUI launches are limited and report failures"
 lg run -d 500 -- sleep 4 & a=$!; sleep 1; lg run -d 600 -- sleep 3 2>/dev/null & b=$!; sleep 1
 out=$(lg list); wait $a $b
 [[ $out == *"sleep "*"until closed"*"sleep-2 "* ]] || fail "parallel runs: $out"
@@ -148,7 +160,7 @@ out=$(lg run -d 500 -- touch "$LG_TMP/launched" 2>&1) && fail "run succeeded wit
 echo "ok: nothing is launched when the helper is unavailable"
 # What happens if a program moves itself to another scope, as some apps do.
 kill $pk; wait $pk 2>/dev/null || true; polkit allow; start_helper
-esc=$(lg run -d 500 -- systemd-run 2>&1 || true); [[ $esc == *"outside its own group"* ]] || fail "systemd-run accepted"
+esc=$(lg run -d 500 -- systemd-run 2>&1 || true); [[ $esc == *"outside LoadGuard"* ]] || fail "systemd-run accepted"
 echo "info: self-moving program gets $(lg run -d 500 -- sh -c 'exec systemd-run --user --scope -q python3 "$0"' "$LG_TMP/first.py" 2>/dev/null) KB/s under a 500 cap"
 # The way Chromium and Electron move: the main process leaves, its child stays.
 cat >"$LG_TMP/mover.py" <<'P'

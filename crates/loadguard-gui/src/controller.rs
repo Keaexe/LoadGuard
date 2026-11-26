@@ -3,21 +3,27 @@
 
 use crate::{
     desktop::Entries,
+    desktop::Launcher,
     model::{self, Helper, Row, Snapshot},
-    ui::{AppRow, MainWindow},
+    ui::{AppRow, LaunchRow, MainWindow, Tray},
 };
 use loadguard_core::{
     Config, Limit, Unit,
     apps::{self, CGROUP_ROOT},
     client::{self, HelperProxy},
     config,
+    launch::{self, Stage},
 };
 use slint::{ComponentHandle, Image, ModelRc, VecModel, Weak};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    os::unix::fs::MetadataExt,
+    env,
+    ffi::OsString,
+    fs,
+    os::unix::fs::{DirBuilderExt, MetadataExt},
     path::{Path, PathBuf},
+    process::Stdio,
     rc::Rc,
     sync::mpsc,
     thread,
@@ -37,6 +43,16 @@ pub struct Controller {
     backend_on: bool,
     editing: Option<Row>,
     shown: Option<(Vec<Row>, Vec<Row>, Unit)>,
+    tray: Option<Weak<Tray>>,
+    /// Indexes into `entries.launchers` shown in the launch dialog.
+    launch_rows: Vec<usize>,
+}
+
+/// Everything needed to start a program limited.
+#[derive(Debug)]
+pub struct Plan {
+    pub stage: Stage,
+    pub dir: Option<PathBuf>,
 }
 
 impl Controller {
@@ -55,6 +71,8 @@ impl Controller {
             backend_on: config.backends.nftables,
             editing: None,
             shown: None,
+            tray: None,
+            launch_rows: Vec::new(),
         }
     }
 
@@ -93,6 +111,190 @@ impl Controller {
         w.set_unit_label(self.unit.label().into());
         w.set_show_all(self.all);
         w.set_searching(!self.search.trim().is_empty());
+        self.refresh_tray(up);
+    }
+
+    fn refresh_tray(&self, up: bool) {
+        let Some(tray) = self.tray.as_ref().and_then(Weak::upgrade) else {
+            return;
+        };
+        let (limited, _) = model::rows(&self.snapshot, &self.entries, "", true);
+        let lines: Vec<slint::SharedString> = limited
+            .iter()
+            .map(|r| {
+                let l = r.limit.map(|l| l.0).unwrap_or_default();
+                let rate = |arrow: char, rate: Option<loadguard_core::Rate>| {
+                    rate.map(|r| format!("  {arrow} {}", model::show(Some(r), self.unit)))
+                };
+                let text = [rate('↓', l.down), rate('↑', l.up)]
+                    .into_iter()
+                    .flatten()
+                    .collect::<String>();
+                format!("{}{text}", r.name).into()
+            })
+            .collect();
+        let summary = match (up, lines.len()) {
+            (false, _) => "LoadGuard: helper not running".to_owned(),
+            (true, 0) => "No app is limited".into(),
+            (true, 1) => "1 app limited".into(),
+            (true, n) => format!("{n} apps limited"),
+        };
+        tray.set_summary(summary.into());
+        tray.set_limits(ModelRc::new(VecModel::from(lines)));
+        tray.set_can_edit(up && self.backend_on);
+    }
+
+    pub fn show_window(&self) {
+        if let Some(w) = self.window.upgrade() {
+            let _ = w.show();
+        }
+    }
+
+    pub fn open_launch(&mut self) {
+        let Some(w) = self.window.upgrade() else {
+            return;
+        };
+        w.set_launch_mode(0);
+        w.set_launch_command("".into());
+        w.set_launch_down_on(true);
+        w.set_launch_down_text("".into());
+        w.set_launch_up_on(false);
+        w.set_launch_up_text("".into());
+        w.set_launch_error("".into());
+        self.launch_search("");
+        w.set_launch_open(true);
+    }
+
+    pub fn launch_search(&mut self, text: &str) {
+        let Some(w) = self.window.upgrade() else {
+            return;
+        };
+        let text = text.trim().to_lowercase();
+        self.launch_rows = (0..self.entries.launchers.len())
+            .filter(|&i| {
+                self.entries.launchers[i]
+                    .entry
+                    .name
+                    .to_lowercase()
+                    .contains(&text)
+            })
+            .collect();
+        let rows: Vec<LaunchRow> = self
+            .launch_rows
+            .clone()
+            .iter()
+            .map(|&i| self.launch_row(i))
+            .collect();
+        w.set_launch_rows(ModelRc::new(VecModel::from(rows)));
+        w.set_launch_selected(-1);
+        self.launch_changed();
+    }
+
+    fn launch_row(&mut self, index: usize) -> LaunchRow {
+        let launcher = self.entries.launchers[index].clone();
+        let icon = launcher.entry.icon.as_ref().and_then(|path| {
+            let load = || Image::load_from_path(path).ok();
+            self.icons.entry(path.clone()).or_insert_with(load).clone()
+        });
+        let name = launcher.entry.name;
+        LaunchRow {
+            letter: name
+                .chars()
+                .next()
+                .unwrap_or('?')
+                .to_uppercase()
+                .to_string()
+                .into(),
+            name: name.into(),
+            has_icon: icon.is_some(),
+            icon: icon.unwrap_or_default(),
+            note: if launcher.refusal.is_some() {
+                "Can't be launched limited: limit it once it runs"
+            } else {
+                ""
+            }
+            .into(),
+            available: launcher.refusal.is_none(),
+        }
+    }
+
+    fn selected_launcher(&self) -> Option<&Launcher> {
+        let w = self.window.upgrade()?;
+        let index = usize::try_from(w.get_launch_selected()).ok()?;
+        self.entries.launchers.get(*self.launch_rows.get(index)?)
+    }
+
+    /// The program the dialog would start, as (command, working directory).
+    fn launch_command(&self) -> Result<(Vec<String>, Option<PathBuf>), String> {
+        let w = self.window.upgrade().ok_or("no window")?;
+        if w.get_launch_mode() == 0 {
+            let launcher = self.selected_launcher().ok_or("Choose an app to launch.")?;
+            return Ok((launcher.command.clone(), launcher.dir.clone()));
+        }
+        let words = launch::split(&w.get_launch_command()).map_err(|e| format!("Command: {e}"))?;
+        if words.is_empty() || words[0].is_empty() {
+            return Err("Enter a command to launch.".into());
+        }
+        Ok((words, None))
+    }
+
+    /// Warns when the chosen app already runs: it may hand over to that copy.
+    pub fn launch_changed(&mut self) {
+        let Some(w) = self.window.upgrade() else {
+            return;
+        };
+        let warning = self.launch_command().ok().and_then(|(command, _)| {
+            let program = Path::new(&command[0])
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
+            let target = match self.selected_launcher() {
+                Some(l) if w.get_launch_mode() == 0 => Some(l.entry.clone()),
+                _ => self.entries.get(&program, None).cloned(),
+            };
+            let running = self.snapshot.apps.iter().find(|app| {
+                app.answers_to(&program)
+                    || target
+                        .as_ref()
+                        .is_some_and(|t| self.entries.get(&app.id, Some(app)) == Some(t))
+            })?;
+            let name = target.map_or_else(|| running.id.clone(), |t| t.name);
+            Some(format!(
+                "{name} is already running. If it reuses that window, this limit won't affect it."
+            ))
+        });
+        w.set_launch_warning(warning.unwrap_or_default().into());
+    }
+
+    pub fn read_launch(&self) -> Result<Plan, String> {
+        let w = self.window.upgrade().ok_or("no window")?;
+        let (command, dir) = self.launch_command()?;
+        let program = OsString::from(&command[0]);
+        if let Some(refusal) = launch::refusal(&program) {
+            return Err(refusal);
+        }
+        if launch::find_program(&program).is_none() {
+            return Err(format!("{} was not found.", command[0]));
+        }
+        let read = |on, text: slint::SharedString, what| {
+            model::read_field(on, &text, self.unit, None).map_err(|e| format!("{what}: {e}"))
+        };
+        let down = read(w.get_launch_down_on(), w.get_launch_down_text(), "Download")?;
+        let up = read(w.get_launch_up_on(), w.get_launch_up_text(), "Upload")?;
+        if down.is_none() && up.is_none() {
+            return Err("Limit at least one direction.".into());
+        }
+        let Helper::Running(limits) = &self.snapshot.helper else {
+            return Err("The helper is not running.".into());
+        };
+        let stage = Stage {
+            id: launch::new_id(&program, &self.snapshot.apps, limits),
+            down: client::encode(down),
+            up: client::encode(up),
+            report: None,
+            command: command.into_iter().map(OsString::from).collect(),
+        };
+        Ok(Plan { stage, dir })
     }
 
     fn ui_row(&mut self, row: &Row) -> AppRow {
@@ -248,7 +450,157 @@ fn act(
     });
 }
 
+/// Where the second stage reports back, private to this user.
+fn report_path() -> Result<PathBuf, String> {
+    let base = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .ok_or("XDG_RUNTIME_DIR is not set")?;
+    let dir = base.join("loadguard");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Ok(dir.join(format!("launch-{}-{unique}", std::process::id())))
+}
+
+/// Starts the program and waits until it is limited, or the reason it is not.
+fn start(mut plan: Plan) -> Result<std::process::Child, String> {
+    let exe = env::current_exe().map_err(|e| e.to_string())?;
+    let report = report_path()?;
+    plan.stage.report = Some(report.clone());
+    let mut command = launch::command(&exe, &plan.stage);
+    command.stdin(Stdio::null());
+    if let Some(dir) = plan.dir.or_else(|| env::var_os("HOME").map(PathBuf::from)) {
+        command.current_dir(dir);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot run systemd-run: {e}"))?;
+    // A password prompt may keep the second stage waiting for a long time.
+    let outcome = loop {
+        if let Ok(text) = fs::read_to_string(&report) {
+            break match text.split_once('\n') {
+                None if text == "ok" => Ok(()),
+                Some((_, error)) => Err(error.to_owned()),
+                None => Err(text),
+            };
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                break fs::read_to_string(&report).map_or_else(
+                    |_| Err(format!("the launch failed ({status})")),
+                    |text| {
+                        if text == "ok" {
+                            Ok(())
+                        } else {
+                            Err(text.lines().skip(1).collect())
+                        }
+                    },
+                );
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(e) => break Err(e.to_string()),
+        }
+    };
+    let _ = fs::remove_file(&report);
+    outcome.map(|()| child)
+}
+
+fn launch_in_background(window: &Weak<MainWindow>, poke: &Poke, plan: Plan) {
+    let (window, poke) = (window.clone(), poke.clone());
+    if let Some(w) = window.upgrade() {
+        w.set_busy(true);
+        w.set_launch_error("".into());
+    }
+    thread::spawn(move || {
+        let result = start(plan);
+        let _ = poke.send(false);
+        let ok = result.is_ok();
+        let error = result.as_ref().err().cloned();
+        let _ = window.upgrade_in_event_loop(move |w| {
+            w.set_busy(false);
+            match error {
+                None => w.set_launch_open(false),
+                Some(e) => w.set_launch_error(e.into()),
+            }
+        });
+        // Reap the program when it exits, so it does not linger as a zombie.
+        if ok && let Ok(mut child) = result {
+            let _ = child.wait();
+            let _ = poke.send(false);
+        }
+    });
+}
+
+/// Whether a desktop panel can show tray icons right now.
+fn tray_host_available() -> bool {
+    let check = || -> zbus::Result<bool> {
+        let conn = zbus::blocking::Connection::session()?;
+        let proxy = zbus::blocking::Proxy::new(
+            &conn,
+            "org.kde.StatusNotifierWatcher",
+            "/StatusNotifierWatcher",
+            "org.kde.StatusNotifierWatcher",
+        )?;
+        proxy.get_property("IsStatusNotifierHostRegistered")
+    };
+    check().unwrap_or(false)
+}
+
+const INSTANCE_NAME: &str = "io.github.keaexe.LoadGuard.Gui";
+const INSTANCE_PATH: &str = "/io/github/keaexe/LoadGuard/Gui";
+
+struct Instance;
+
+#[zbus::interface(name = "io.github.keaexe.LoadGuard.Gui")]
+impl Instance {
+    /// Shows the window of the running copy.
+    fn activate(&self) {
+        let _ = slint::invoke_from_event_loop(|| {
+            with(|c| c.show_window());
+        });
+    }
+}
+
+/// Becomes the only copy, or asks the running one to show itself. Returns
+/// `None` when another copy took over.
+fn claim_instance() -> Option<Option<zbus::blocking::Connection>> {
+    use zbus::fdo::{RequestNameFlags, RequestNameReply};
+    let conn = zbus::blocking::connection::Builder::session()
+        .and_then(|b| b.serve_at(INSTANCE_PATH, Instance))
+        .and_then(|b| b.build());
+    // Without a session bus there is nothing to coordinate with.
+    let Ok(conn) = conn else { return Some(None) };
+    match conn.request_name_with_flags(INSTANCE_NAME, RequestNameFlags::DoNotQueue.into()) {
+        // zbus reports an owned name as an error rather than as a reply.
+        Ok(RequestNameReply::Exists) | Err(zbus::Error::NameTaken) => {
+            let shown =
+                zbus::blocking::Proxy::new(&conn, INSTANCE_NAME, INSTANCE_PATH, INSTANCE_NAME)
+                    .and_then(|p| p.call_method("Activate", &()).map(drop));
+            match shown {
+                Ok(()) => None,
+                Err(e) => {
+                    eprintln!(
+                        "note: could not reach the running LoadGuard ({e}); starting another"
+                    );
+                    Some(Some(conn))
+                }
+            }
+        }
+        _ => Some(Some(conn)),
+    }
+}
+
 pub fn run() -> Result<(), String> {
+    let Some(_instance) = claim_instance() else {
+        return Ok(());
+    };
     let path = Config::default_path().ok_or("cannot locate the configuration directory")?;
     let config = Config::load(&path)?;
     let uid = std::fs::metadata("/proc/self")
@@ -318,8 +670,54 @@ pub fn run() -> Result<(), String> {
     window.on_remove(move |id| {
         act(&w, &p, move |h| h.clear_limit(&id).map_err(client::explain));
     });
-    let (w, p) = (weak, poke);
+    let (w, p) = (weak, poke.clone());
     window.on_clear_all(move || act(&w, &p, |h| h.clear_all().map_err(client::explain)));
 
-    window.run().map_err(|e| e.to_string())
+    window.on_open_launch(|| with(Controller::open_launch).unwrap_or_default());
+    window.on_launch_search(|text| with(|c| c.launch_search(&text)).unwrap_or_default());
+    window.on_launch_changed(|| with(Controller::launch_changed).unwrap_or_default());
+    let (w, p) = (Rc::new(window.as_weak()), poke.clone());
+    window.on_launch_start(move || {
+        let Some(win) = w.upgrade() else { return };
+        if win.get_busy() {
+            return;
+        }
+        match with(|c| c.read_launch()) {
+            Some(Ok(plan)) => launch_in_background(&w, &p, plan),
+            Some(Err(e)) => win.set_launch_error(e.into()),
+            None => {}
+        }
+    });
+
+    // Without a panel to hold the icon, closing the window quits.
+    let tray = if tray_host_available() {
+        Tray::new().ok()
+    } else {
+        None
+    };
+    if let Some(tray) = &tray {
+        with(|c| {
+            c.tray = Some(tray.as_weak());
+            c.refresh();
+        });
+        tray.on_open(|| with(|c| c.show_window()).unwrap_or_default());
+        tray.on_launch(|| {
+            with(|c| {
+                c.show_window();
+                c.open_launch();
+            });
+        });
+        let w = window.as_weak();
+        tray.on_clear_all(move || {
+            with(|c| c.show_window());
+            if let Some(w) = w.upgrade() {
+                w.set_confirm_open(true);
+            }
+        });
+        tray.on_quit(|| {
+            let _ = slint::quit_event_loop();
+        });
+    }
+    window.show().map_err(|e| e.to_string())?;
+    slint::run_event_loop().map_err(|e| e.to_string())
 }

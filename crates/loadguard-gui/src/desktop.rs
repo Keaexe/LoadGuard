@@ -1,9 +1,11 @@
 //! Names and icons from desktop entries.
 
-use loadguard_core::App;
+use loadguard_core::{App, launch};
 use std::{
     collections::HashMap,
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -13,9 +15,23 @@ pub struct Entry {
     pub icon: Option<PathBuf>,
 }
 
-/// Desktop entries by every lower-case key an app id may match.
+/// An installed app that can be launched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Launcher {
+    pub entry: Entry,
+    pub command: Vec<String>,
+    pub dir: Option<PathBuf>,
+    /// Why it cannot be launched limited, if so.
+    pub refusal: Option<String>,
+}
+
+/// Desktop entries by every lower-case key an app id may match, and the
+/// installed apps that can be launched.
 #[derive(Default)]
-pub struct Entries(HashMap<String, Entry>);
+pub struct Entries {
+    by_key: HashMap<String, Entry>,
+    pub launchers: Vec<Launcher>,
+}
 
 impl Entries {
     pub fn load() -> Self {
@@ -25,6 +41,8 @@ impl Entries {
     fn load_from(dirs: &[PathBuf], lang: &str, theme: Option<&str>) -> Self {
         let mut exact = HashMap::new();
         let mut loose = HashMap::new();
+        let mut launchers: Vec<Launcher> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         // Earlier directories take precedence.
         for dir in dirs {
             let Ok(files) = fs::read_dir(dir.join("applications")) else {
@@ -42,11 +60,28 @@ impl Entries {
                 let Some(raw) = fs::read_to_string(&path).ok().and_then(|t| parse(&t, lang)) else {
                     continue;
                 };
+                let raw_icon = raw.icon.clone();
                 let entry = Entry {
-                    name: raw.name,
-                    icon: raw.icon.and_then(|i| find_icon(&i, dirs, theme)),
+                    name: raw.name.clone(),
+                    icon: raw.icon.as_deref().and_then(|i| find_icon(i, dirs, theme)),
                 };
                 let stem = stem.to_lowercase();
+                // Same file name in a later directory is shadowed, as in menus.
+                if raw.visible
+                    && seen.insert(stem.clone())
+                    && let Some(command) = raw
+                        .exec
+                        .as_deref()
+                        .and_then(|e| expand_exec(e, &entry.name, raw_icon.as_deref(), &path))
+                {
+                    let refusal = launch::refusal(OsStr::new(&command[0]));
+                    launchers.push(Launcher {
+                        entry: entry.clone(),
+                        command,
+                        dir: raw.dir.clone(),
+                        refusal,
+                    });
+                }
                 if raw.visible {
                     let last = stem.rsplit('.').next().unwrap_or_default().to_owned();
                     for key in [raw.wm_class, raw.program, Some(last)]
@@ -64,7 +99,12 @@ impl Entries {
         for (key, entry) in loose {
             exact.entry(key).or_insert(entry);
         }
-        Self(exact)
+        launchers.sort_by_cached_key(|l| l.entry.name.to_lowercase());
+        launchers.dedup_by(|a, b| a.entry.name == b.entry.name && a.command == b.command);
+        Self {
+            by_key: exact,
+            launchers,
+        }
     }
 
     /// Looks an app up by its id, then by its other groups.
@@ -74,12 +114,14 @@ impl Entries {
         [id].into_iter()
             .chain(own)
             .chain(aliases.iter().map(String::as_str))
-            .find_map(|id| self.0.get(&id.to_lowercase()))
+            .find_map(|id| self.by_key.get(&id.to_lowercase()))
     }
 }
 
 struct Raw {
     name: String,
+    exec: Option<String>,
+    dir: Option<PathBuf>,
     icon: Option<String>,
     program: Option<String>,
     wm_class: Option<String>,
@@ -118,7 +160,11 @@ fn parse(text: &str, lang: &str) -> Option<Raw> {
         .filter(|p| {
             !["env", "sh", "bash", "flatpak", "steam", "python3", "java"].contains(&p.as_str())
         });
+    let installed = get("TryExec").is_none_or(|t| launch::find_program(OsStr::new(&t)).is_some());
+    let application = get("Type").as_deref() == Some("Application");
     Some(Raw {
+        exec: get("Exec").filter(|_| installed && application),
+        dir: get("Path").map(PathBuf::from).filter(|p| p.is_absolute()),
         name: name.replace(char::is_control, " "),
         icon: get("Icon"),
         program,
@@ -126,6 +172,42 @@ fn parse(text: &str, lang: &str) -> Option<Raw> {
         visible: get("NoDisplay").as_deref() != Some("true")
             && get("Hidden").as_deref() != Some("true"),
     })
+}
+
+/// Turns an Exec value into arguments, following the desktop entry spec:
+/// file and URL codes are dropped, since nothing is opened.
+fn expand_exec(exec: &str, name: &str, icon: Option<&str>, file: &Path) -> Option<Vec<String>> {
+    // Values may escape characters once more for the file format itself.
+    let unescaped = exec.replace("\\s", " ").replace("\\\\", "\\");
+    let mut out = Vec::new();
+    for word in launch::split(&unescaped).ok()? {
+        match word.as_str() {
+            "%f" | "%F" | "%u" | "%U" | "%d" | "%D" | "%n" | "%N" | "%v" | "%m" => {}
+            "%i" => {
+                if let Some(icon) = icon {
+                    out.extend(["--icon".to_owned(), icon.to_owned()]);
+                }
+            }
+            _ => {
+                let mut text = String::new();
+                let mut chars = word.chars();
+                while let Some(c) = chars.next() {
+                    if c != '%' {
+                        text.push(c);
+                        continue;
+                    }
+                    match chars.next() {
+                        Some('%') => text.push('%'),
+                        Some('c') => text.push_str(name),
+                        Some('k') => text.push_str(&file.to_string_lossy()),
+                        _ => {}
+                    }
+                }
+                out.push(text);
+            }
+        }
+    }
+    (!out.is_empty() && !out[0].is_empty()).then_some(out)
 }
 
 fn find_icon(icon: &str, dirs: &[PathBuf], theme: Option<&str>) -> Option<PathBuf> {
@@ -253,6 +335,18 @@ mod tests {
         );
         write("hidden.desktop", "Name=Hidden\nNoDisplay=true\nExec=secret");
         write("game.desktop", "Name=Game\nExec=steam steam://1");
+        write(
+            "flat.desktop",
+            "Type=Application\nName=Flat\nExec=/usr/bin/flatpak run org.x.Flat",
+        );
+        write(
+            "gone.desktop",
+            "Type=Application\nName=Gone\nTryExec=no-such-program-lg\nExec=gone",
+        );
+        write(
+            "tool.desktop",
+            "Type=Application\nName=Tool\nIcon=zen\nPath=/tmp\nExec=\"/opt/my tool/run\" --name=%c %i --open %U 100%%",
+        );
         let themed = dir.join("icons/mine/apps/scalable");
         fs::create_dir_all(&themed).unwrap();
         fs::write(themed.join("mail-icon.svg"), "").unwrap();
@@ -271,6 +365,25 @@ mod tests {
             ..App::default()
         };
         assert_eq!(e.get("cef", Some(&app)).unwrap().name, "Mail");
+        let launchers: Vec<_> = e
+            .launchers
+            .iter()
+            .map(|l| (l.entry.name.as_str(), l.refusal.is_some()))
+            .collect();
+        assert_eq!(launchers, [("Flat", true), ("Tool", false)]);
+        let tool = &e.launchers[1];
+        assert_eq!(
+            tool.command,
+            [
+                "/opt/my tool/run",
+                "--name=Tool",
+                "--icon",
+                "zen",
+                "--open",
+                "100%"
+            ]
+        );
+        assert_eq!(tool.dir.as_deref(), Some(Path::new("/tmp")));
         fs::remove_dir_all(dir).unwrap();
     }
 }

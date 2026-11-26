@@ -9,7 +9,8 @@ build = "build.rs"
 
 [dependencies]
 loadguard-core = { path = "../loadguard-core" }
-slint = { version = "~1.18", features = ["renderer-software"] }
+zbus = "5"
+slint = { version = "~1.18", features = ["renderer-software", "system-tray"] }
 
 [build-dependencies]
 slint-build = "~1.18"

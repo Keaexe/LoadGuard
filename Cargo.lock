@@ -2643,6 +2643,7 @@ dependencies = [
  "loadguard-core",
  "slint",
  "slint-build",
+ "zbus",
 ]
 
 [[package]]

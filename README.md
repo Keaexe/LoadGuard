@@ -8,7 +8,8 @@ nftables. It requires cgroup v2, a systemd user session, nftables and polkit.
 
     loadguard-gui
 
-or from a terminal:
+It can launch apps with a limit and lives in the system tray when the desktop
+has one. Or from a terminal:
 
     loadguard list
     loadguard limit firefox --down 500K --up 100K
@@ -31,4 +32,5 @@ or the computer restarts. You are asked for your password once per login.
     cargo test
     scripts/test-limits.sh   # generated rules, in an isolated namespace
     scripts/test-helper.sh   # real helper and CLI, end to end; no root needed
+    scripts/test-gui.sh      # real GUI, tray and single instance on a virtual display
     cargo run -p loadguard-gui --example screens -- DIR   # GUI checks and screenshots

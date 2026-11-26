@@ -12,6 +12,15 @@ export struct AppRow {
     up: string,
 }
 
+export struct LaunchRow {
+    name: string,
+    icon: image,
+    has-icon: bool,
+    letter: string,
+    note: string,
+    available: bool,
+}
+
 export global Theme {
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
     out property <color> bg: dark ? #191c21 : #f4f5f8;
@@ -373,7 +382,7 @@ export component MainWindow inherits Window {
     preferred-width: 820px;
     preferred-height: 640px;
     min-width: 560px;
-    min-height: 420px;
+    min-height: 480px;
     background: Theme.bg;
     default-font-size: 14px;
 
@@ -408,6 +417,22 @@ export component MainWindow inherits Window {
     in property <bool> busy;
     in-out property <string> editor-error;
     in-out property <bool> confirm-open;
+
+    in-out property <bool> launch-open;
+    in-out property <int> launch-mode;
+    in property <[LaunchRow]> launch-rows;
+    in-out property <int> launch-selected: -1;
+    in-out property <string> launch-command;
+    in-out property <bool> launch-down-on: true;
+    in-out property <string> launch-down-text;
+    in-out property <bool> launch-up-on;
+    in-out property <string> launch-up-text;
+    in property <string> launch-warning;
+    in-out property <string> launch-error;
+    callback open-launch();
+    callback launch-search(string);
+    callback launch-changed();
+    callback launch-start();
     // Follows the desktop unless set.
     in-out property <ColorScheme> scheme <=> Palette.color-scheme;
 
@@ -421,6 +446,7 @@ export component MainWindow inherits Window {
                 spacing: 12px;
                 Field { placeholder: "Search apps"; edited(t) => { root.search(t); } }
                 Segment { options: ["KB/s", "Mbit/s"]; current: root.unit; selected(i) => { root.set-unit(i); } }
+                Button { text: "Launch limited…"; primary: true; enabled: root.can-edit; clicked => { root.open-launch(); } }
             }
             Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
         }
@@ -529,5 +555,148 @@ export component MainWindow inherits Window {
             cancel := Button { text: "Cancel"; clicked => { root.confirm-open = false; } }
             Button { text: "Clear all"; primary: true; enabled: !root.busy; clicked => { root.confirm-open = false; root.clear-all(); } }
         }
+    }
+
+    if root.launch-open: Overlay {
+        card-width: 500px;
+        init => { self.grab(); }
+        dismissed => { root.launch-open = false; }
+        Text { text: "Launch limited"; color: Theme.text; font-size: 17px; font-weight: 600; }
+        HorizontalLayout {
+            alignment: start;
+            Segment {
+                options: ["Installed app", "Command"];
+                current: root.launch-mode;
+                selected(i) => { root.launch-mode = i; root.launch-error = ""; root.launch-changed(); }
+            }
+        }
+        if root.launch-mode == 0: VerticalLayout {
+            spacing: 8px;
+            Field { placeholder: "Search installed apps"; label: "Search installed apps"; init => { self.focus-all(); root.launch-search(""); } edited(t) => { root.launch-search(t); } }
+            Rectangle {
+                // Shrinks so the dialog fits small windows.
+                height: clamp(root.height - 430px, 88px, 190px);
+                background: Theme.card;
+                border-width: 1px;
+                border-color: Theme.line;
+                border-radius: 8px;
+                clip: true;
+                ScrollView {
+                    VerticalLayout {
+                        alignment: start;
+                        for item[i] in root.launch-rows: Rectangle {
+                            height: 44px;
+                            background: i == root.launch-selected ? Theme.soft : pick.has-hover && item.available ? Theme.bg : transparent;
+                            border-width: pick-scope.has-focus ? 2px : 0px;
+                            border-color: Theme.accent-text;
+                            opacity: item.available ? 1 : 0.6;
+                            accessible-role: list-item;
+                            accessible-label: item.name;
+                            accessible-description: item.note;
+                            accessible-item-selectable: item.available;
+                            accessible-item-selected: i == root.launch-selected;
+                            accessible-action-default => { if (item.available) { root.launch-selected = i; root.launch-changed(); } }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Tile { entry: { id: "", name: item.name, detail: "", icon: item.icon, has-icon: item.has-icon, letter: item.letter, limited: false, down: "", up: "" }; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: item.name; color: Theme.text; font-weight: 600; overflow: elide; }
+                                    if item.note != "": Text { text: item.note; color: Theme.muted; font-size: 12px; overflow: elide; }
+                                }
+                            }
+                            pick-scope := FocusScope {
+                                key-pressed(e) => {
+                                    if ((e.text == Key.Return || e.text == " ") && item.available) {
+                                        root.launch-selected = i; root.launch-changed(); return accept;
+                                    }
+                                    reject
+                                }
+                            }
+                            pick := TouchArea {
+                                enabled: item.available;
+                                mouse-cursor: pointer;
+                                clicked => { root.launch-selected = i; root.launch-changed(); }
+                                double-clicked => { root.launch-selected = i; root.launch-changed(); root.launch-start(); }
+                            }
+                        }
+                        if root.launch-rows.length == 0: Text {
+                            text: "No installed app matches.";
+                            color: Theme.muted;
+                            horizontal-alignment: center;
+                            height: 44px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+        if root.launch-mode == 1: VerticalLayout {
+            spacing: 5px;
+            command := Field {
+                text <=> root.launch-command;
+                placeholder: "wget -O file.iso https://example.org/file.iso";
+                label: "Command";
+                init => { self.focus-all(); }
+                edited => { root.launch-changed(); }
+                accepted => { root.launch-start(); }
+            }
+            Text { text: "Runs without a shell: quotes work, pipes and variables do not."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+        }
+        HorizontalLayout {
+            spacing: 14px;
+            DirectionEdit { title: "Download"; unit: root.unit-label; on <=> root.launch-down-on; text <=> root.launch-down-text; accepted => { root.launch-start(); } }
+            DirectionEdit { title: "Upload"; unit: root.unit-label; on <=> root.launch-up-on; text <=> root.launch-up-text; accepted => { root.launch-start(); } }
+        }
+        Text { text: "The limit ends when the app closes."; color: Theme.muted; font-size: 12px; }
+        if root.launch-warning != "": Rectangle {
+            border-width: 1px;
+            border-color: #c7953a;
+            border-radius: 6px;
+            height: warning-text.preferred-height + 16px;
+            warning-text := Text { x: 11px; width: parent.width - 22px; text: root.launch-warning; color: Theme.text; wrap: word-wrap; vertical-alignment: center; }
+        }
+        if root.launch-error != "": Text { text: root.launch-error; color: Theme.danger; wrap: word-wrap; }
+        HorizontalLayout {
+            padding-top: 10px;
+            spacing: 10px;
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Cancel"; clicked => { root.launch-open = false; } }
+            Button {
+                text: root.busy ? "Launching…" : "Launch";
+                primary: true;
+                enabled: !root.busy && (root.launch-mode == 0 ? root.launch-selected >= 0 : root.launch-command != "");
+                clicked => { root.launch-start(); }
+            }
+        }
+    }
+}
+
+export component Tray inherits SystemTrayIcon {
+    icon: @image-url("tray.png");
+    tooltip: root.summary;
+    title: "LoadGuard";
+    in property <string> summary: "LoadGuard";
+    in property <[string]> limits;
+    in property <bool> can-edit;
+    callback open();
+    callback launch();
+    callback clear-all();
+    callback quit();
+    clicked => { root.open(); }
+    Menu {
+        MenuItem { title: root.summary; enabled: false; }
+        for line in root.limits: MenuItem { title: line; enabled: false; }
+        MenuSeparator { }
+        MenuItem { title: "Open LoadGuard"; activated => { root.open(); } }
+        MenuItem { title: "Launch limited…"; enabled: root.can-edit; activated => { root.launch(); } }
+        MenuItem { title: "Clear all limits…"; enabled: root.can-edit && root.limits.length > 0; activated => { root.clear-all(); } }
+        MenuSeparator { }
+        MenuItem { title: "Quit (limits stay active)"; activated => { root.quit(); } }
     }
 }

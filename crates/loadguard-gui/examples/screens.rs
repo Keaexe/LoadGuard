@@ -4,12 +4,12 @@
 use loadguard_core::{App, Config, Limit, Unit};
 use loadguard_gui::{
     controller::Controller,
-    desktop::Entries,
+    desktop::{Entries, Entry, Launcher},
     model::{Helper, Snapshot},
     ui::MainWindow,
 };
 use slint::{
-    ComponentHandle, LogicalPosition, PhysicalSize, Rgb8Pixel, SharedString,
+    ComponentHandle, LogicalPosition, Model, PhysicalSize, Rgb8Pixel, SharedString,
     platform::{
         Key, Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
@@ -174,7 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     *c.borrow_mut() = Controller::new(&w, Entries::load(), &config);
     c.borrow_mut().update(running);
-    adapter.set_size(PhysicalSize::new(560, 420));
+    adapter.set_size(PhysicalSize::new(560, 480));
     shots.take("small");
     c.borrow_mut().open("beeper.appimage");
     w.set_editor_error("Download: 'x' is not a valid rate (try 500K or 20Mbit)".into());
@@ -185,6 +185,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     shots.take("dark");
     c.borrow_mut().open("steam");
     shots.take("dark-editor");
+    // Launch dialog, with installed apps that do not depend on this machine.
+    w.set_scheme(slint::language::ColorScheme::Light);
+    let launcher = |name: &str, command: &[&str], refusal: Option<&str>| Launcher {
+        entry: Entry {
+            name: name.into(),
+            icon: None,
+        },
+        command: command.iter().map(|c| (*c).into()).collect(),
+        dir: None,
+        refusal: refusal.map(Into::into),
+    };
+    let mut entries = Entries::default();
+    entries.launchers = vec![
+        launcher("Flatpak App", &["flatpak", "run", "x"], Some("no")),
+        launcher("Shell", &["sh", "-c", "exit"], None),
+        launcher("Zen Browser", &["/usr/bin/zen"], None),
+    ];
+    *c.borrow_mut() = Controller::new(&w, entries, &Config::default());
+    let mut snapshot = Snapshot {
+        apps: vec![app("sh", 1, &[])],
+        ..Snapshot {
+            apps: vec![],
+            helper: Helper::Stopped,
+        }
+    };
+    snapshot.helper = Helper::Running([("sh".to_owned(), (limit("1", ""), false))].into());
+    c.borrow_mut().update(snapshot);
+    let launcher_c = c.clone();
+    w.on_launch_changed(move || launcher_c.borrow_mut().launch_changed());
+    let search_c = c.clone();
+    w.on_launch_search(move |t| search_c.borrow_mut().launch_search(&t));
+    c.borrow_mut().open_launch();
+    assert!(w.get_launch_open());
+    assert_eq!(w.get_launch_rows().row_count(), 3);
+    assert!(
+        !w.get_launch_rows().row_data(0).unwrap().available,
+        "Flatpak is refused"
+    );
+    assert!(c.borrow().read_launch().is_err(), "nothing chosen yet");
+    for ch in ["s", "H"] {
+        shots.key(ch);
+    }
+    assert_eq!(
+        w.get_launch_rows().row_count(),
+        1,
+        "typing searches installed apps"
+    );
+    w.set_launch_selected(0);
+    w.invoke_launch_changed();
+    assert!(w.get_launch_warning().contains("already running"));
+    w.set_launch_down_text("300".into());
+    let plan = c.borrow().read_launch().expect("valid launch");
+    assert_eq!(plan.stage.command, ["sh", "-c", "exit"]);
+    assert_eq!(plan.stage.down, 300_000);
+    assert_eq!(plan.stage.id, "sh-2", "a saved limit's id is never reused");
+    shots.take("launch");
+    w.set_launch_mode(1);
+    w.set_launch_command("no-such-program-lg --x".into());
+    assert!(c.borrow().read_launch().unwrap_err().contains("not found"));
+    w.set_launch_command("flatpak run org.x.Y".into());
+    assert!(
+        c.borrow()
+            .read_launch()
+            .unwrap_err()
+            .contains("outside LoadGuard")
+    );
+    w.set_launch_command("sh -c 'echo \"a b\"'".into());
+    w.set_launch_up_on(true);
+    w.set_launch_up_text("2".into());
+    w.set_launch_error("Download: enter a speed, or switch this direction off".into());
+    let plan = c.borrow().read_launch().expect("valid command");
+    assert_eq!(plan.stage.command, ["sh", "-c", "echo \"a b\""]);
+    assert_eq!(plan.stage.up, 2_000);
+    shots.take("launch-command");
+    w.set_launch_mode(0);
+    shots.take("launch-back");
+    assert_eq!(w.get_launch_rows().row_count(), 3, "a fresh search field shows every app");
+    adapter.set_size(PhysicalSize::new(560, 480));
+    shots.take("launch-small");
+    adapter.set_size(PhysicalSize::new(820, 640));
+    shots.key(Key::Escape);
+    assert!(!w.get_launch_open());
     println!("ok");
     Ok(())
 }

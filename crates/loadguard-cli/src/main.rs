@@ -3,11 +3,11 @@ use loadguard_core::{
     Config, Limit, Rate,
     apps::{self, App, CGROUP_ROOT},
     client::{self, Limits, connect as helper, explain, limits},
-    nft,
+    launch, nft,
 };
 use std::{
     env, ffi::OsString, os::unix::fs::MetadataExt, os::unix::process::CommandExt, path::Path,
-    process, process::ExitCode, str::FromStr,
+    process::ExitCode, str::FromStr,
 };
 
 /// Limit the download and upload speed of running apps.
@@ -58,18 +58,6 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<OsString>,
     },
-    /// Second stage of `run`, inside the new scope
-    #[command(name = "run-in-scope", hide = true)]
-    RunInScope {
-        #[arg(long)]
-        id: String,
-        #[arg(long, default_value_t = 0)]
-        down: u64,
-        #[arg(long, default_value_t = 0)]
-        up: u64,
-        #[arg(required = true, last = true)]
-        command: Vec<OsString>,
-    },
     /// Remove an app's limit, or every limit
     Clear {
         /// App id, or any unambiguous part of it
@@ -95,13 +83,28 @@ impl FromStr for RateArg {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse().command) {
+    let args: Vec<OsString> = env::args_os().collect();
+    // The second stage of `run`; parsed by hand so its "--" reaches it unchanged.
+    let result = if args.get(1).is_some_and(|a| a == launch::STAGE) {
+        stage(&args[2..])
+    } else {
+        run(Cli::parse().command)
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn stage(args: &[OsString]) -> Result<(), String> {
+    let stage = launch::Stage::parse(args)?;
+    let uid = std::fs::metadata("/proc/self")
+        .map_err(|e| e.to_string())?
+        .uid();
+    Err(launch::enter(&stage, uid))
 }
 
 fn run(command: Command) -> Result<(), String> {
@@ -177,15 +180,7 @@ fn run(command: Command) -> Result<(), String> {
             }
             // Fail before launching anything if the helper is unavailable.
             let limits = current()?;
-            return Err(launch(down, up, &command, &apps()?, &limits));
-        }
-        Command::RunInScope {
-            id,
-            down,
-            up,
-            command,
-        } => {
-            return Err(launch_in_scope(&id, down, up, &command, &apps()?));
+            return Err(start(down, up, &command, &apps()?, &limits));
         }
         Command::Clear {
             app: Some(query), ..
@@ -205,29 +200,25 @@ fn run(command: Command) -> Result<(), String> {
 }
 
 /// Moves into a new scope. Only returns on failure.
-fn launch(
+fn start(
     down: Option<Rate>,
     up: Option<Rate>,
     command: &[OsString],
     apps: &[App],
     limits: &Limits,
 ) -> String {
-    let program = command[0].to_string_lossy();
-    let name = program.rsplit('/').next().unwrap_or_default();
-    if ["flatpak", "snap", "systemd-run", "gtk-launch", "xdg-open"].contains(&name) {
-        return format!(
-            "'{name}' starts programs outside its own group, so the limit would not hold; \
-             start the app normally and use `loadguard limit`"
-        );
+    let program = &command[0];
+    if let Some(refusal) = launch::refusal(program) {
+        return refusal;
     }
-    // Saved limits reserve their id too, so a launch never replaces them.
-    let mut taken = apps.to_vec();
-    taken.extend(limits.keys().map(|id| App {
-        id: id.clone(),
-        ..App::default()
-    }));
-    let id = apps::launch_id(&program, &taken);
-    if apps.iter().any(|a| a.id.eq_ignore_ascii_case(name)) {
+    let name = Path::new(program)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    if apps
+        .iter()
+        .any(|a| a.answers_to(&name) || a.id.eq_ignore_ascii_case(&name))
+    {
         eprintln!(
             "warning: {name} is already running; if it reuses that window, \
              this limit will not affect it"
@@ -237,45 +228,15 @@ fn launch(
         Ok(exe) => exe,
         Err(e) => return e.to_string(),
     };
-    let error = process::Command::new("systemd-run")
-        .args([
-            "--user",
-            "--scope",
-            "--quiet",
-            "--collect",
-            "--slice=app.slice",
-            "--expand-environment=no",
-        ])
-        .arg(format!("--unit={}", apps::launch_unit(&id, process::id())))
-        .arg("--")
-        .arg(exe)
-        .arg("run-in-scope")
-        .arg(format!("--id={id}"))
-        .arg(format!("--down={}", client::encode(down)))
-        .arg(format!("--up={}", client::encode(up)))
-        .arg("--")
-        .args(command)
-        .exec();
+    let stage = launch::Stage {
+        id: launch::new_id(program, apps, limits),
+        down: client::encode(down),
+        up: client::encode(up),
+        report: None,
+        command: command.to_vec(),
+    };
+    let error = launch::command(&exe, &stage).exec();
     format!("cannot run systemd-run: {error}")
-}
-
-/// Limits this process's scope, then becomes `command`. Only returns on failure.
-fn launch_in_scope(id: &str, down: u64, up: u64, command: &[OsString], apps: &[App]) -> String {
-    let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-    let own = own.trim().strip_prefix("0::/").unwrap_or_default();
-    let covered = apps
-        .iter()
-        .any(|a| a.answers_to(id) && a.cgroups.iter().any(|c| c.as_str() == own));
-    if !covered {
-        return "could not enter a separate group, so nothing was launched".into();
-    }
-    if let Err(e) = helper().and_then(|h| h.set_limit(id, down, up, true).map_err(explain)) {
-        return format!("{e}; nothing was launched");
-    }
-    let error = process::Command::new(&command[0])
-        .args(&command[1..])
-        .exec();
-    format!("cannot start {}: {error}", command[0].to_string_lossy())
 }
 
 /// Finds the limit meant by `query`: an exact id, then an exact name of a limited
