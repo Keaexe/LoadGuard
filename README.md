@@ -109,7 +109,7 @@ To remove it: `sudo dnf remove loadguard` or `sudo zypper remove loadguard`.
 
 ### Arch Linux
 
-Install `loadguard` from the AUR with your usual AUR helper, or build the
+Installing `loadguard` from the AUR with your usual AUR helper is coming. So you'll have to build the
 current source yourself:
 
 ```sh
