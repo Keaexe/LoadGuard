@@ -6,8 +6,15 @@ use loadguard_core::{
     launch, nft,
 };
 use std::{
-    env, ffi::OsString, os::unix::fs::MetadataExt, os::unix::process::CommandExt, path::Path,
-    process::ExitCode, str::FromStr,
+    env,
+    ffi::OsString,
+    io::{self, Write},
+    os::unix::fs::MetadataExt,
+    os::unix::process::CommandExt,
+    path::Path,
+    process,
+    process::ExitCode,
+    str::FromStr,
 };
 
 /// Limit the download and upload speed of running apps.
@@ -99,6 +106,20 @@ fn main() -> ExitCode {
     }
 }
 
+/// Writes to standard output. A reader that stops early, like `head`, is not
+/// an error; `println!` would panic there.
+fn out(text: &str) {
+    let mut stdout = io::stdout().lock();
+    if let Err(e) = stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+        && e.kind() != io::ErrorKind::BrokenPipe
+    {
+        eprintln!("error: cannot write output: {e}");
+        process::exit(1);
+    }
+}
+
 fn stage(args: &[OsString]) -> Result<(), String> {
     let stage = launch::Stage::parse(args)?;
     let uid = std::fs::metadata("/proc/self")
@@ -126,7 +147,7 @@ fn run(command: Command) -> Result<(), String> {
                 eprintln!("note: {e}; limits are not shown");
                 Limits::new()
             });
-            list(&apps()?, &limits, all);
+            out(&list(&apps()?, &limits, all));
         }
         Command::Limit {
             app,
@@ -159,16 +180,17 @@ fn run(command: Command) -> Result<(), String> {
             }
             if dry_run {
                 limits.insert(id, (limit, until_closed));
-                print!("{}", rules(uid, &limits, &apps));
+                out(&rules(uid, &limits, &apps));
             } else {
                 helper()?
                     .set_limit(&id, d, u, until_closed)
                     .map_err(explain)?;
-                println!(
-                    "{id}: download {}, upload {}",
+                out(&format!(
+                    "{id}: download {}, upload {}
+",
                     show(limit.down),
                     show(limit.up)
-                );
+                ));
             }
         }
         Command::Run { down, up, command } => {
@@ -189,11 +211,11 @@ fn run(command: Command) -> Result<(), String> {
             // Saved limits can be cleared even if apps cannot be listed.
             let id = find_limit(&query, &limits(&helper)?, &apps().unwrap_or_default())?;
             helper.clear_limit(&id).map_err(explain)?;
-            println!("{id}: limit removed");
+            out(&format!("{id}: limit removed\n"));
         }
         Command::Clear { app: None, .. } => {
             helper()?.clear_all().map_err(explain)?;
-            println!("All limits removed");
+            out("All limits removed\n");
         }
     }
     Ok(())
@@ -294,8 +316,10 @@ fn show(rate: Option<Rate>) -> String {
     rate.map_or_else(|| "unlimited".into(), |r| r.to_string())
 }
 
-fn list(apps: &[App], limits: &Limits, all: bool) {
-    let row = |name: &str, procs: usize, entry: Option<&(Limit, bool)>| {
+/// The app table, as text.
+fn list(apps: &[App], limits: &Limits, all: bool) -> String {
+    let mut out = String::new();
+    let row = |out: &mut String, name: &str, procs: usize, entry: Option<&(Limit, bool)>| {
         let (down, up, kept) = match entry {
             Some((l, temp)) => {
                 let kept = if *temp { "until closed" } else { "always" };
@@ -304,28 +328,30 @@ fn list(apps: &[App], limits: &Limits, all: bool) {
             None => ("-".into(), "-".into(), ""),
         };
         let line = format!("{name:<40} {procs:>5} {down:>12} {up:>12}  {kept}");
-        println!("{}", line.trim_end());
+        out.push_str(line.trim_end());
+        out.push('\n');
     };
-    println!("{:<40} {:>5} {:>12} {:>12}", "APP", "PROCS", "DOWN", "UP");
+    out += &format!("{:<40} {:>5} {:>12} {:>12}\n", "APP", "PROCS", "DOWN", "UP");
     for app in apps {
         // A limit saved under an alias gets its own row, named as it must be cleared.
         let mut own: Vec<_> = limits.iter().filter(|(id, _)| app.answers_to(id)).collect();
         own.sort_by_key(|(id, _)| **id != app.id);
         if own.is_empty() && (all || app.desktop) {
-            row(&app.id, app.processes, None);
+            row(&mut out, &app.id, app.processes, None);
         }
         for (id, entry) in own {
-            row(id, app.processes, Some(entry));
+            row(&mut out, id, app.processes, Some(entry));
         }
         if !app.aliases.is_empty() && (all || app.desktop) {
-            println!("  also covers: {}", app.aliases.join(", "));
+            out += &format!("  also covers: {}\n", app.aliases.join(", "));
         }
     }
     for (id, entry) in limits {
         if !apps.iter().any(|a| a.answers_to(id)) {
-            row(id, 0, Some(entry));
+            row(&mut out, id, 0, Some(entry));
         }
     }
+    out
 }
 
 #[cfg(test)]
