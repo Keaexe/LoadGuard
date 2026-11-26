@@ -14,6 +14,7 @@ permissions:
 jobs:
   version:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -33,6 +34,7 @@ jobs:
   deb-and-tarball:
     needs: version
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     container: debian:12
     steps:
       - name: Install build dependencies
@@ -57,6 +59,7 @@ jobs:
   rpm:
     needs: version
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # The oldest Fedora still supported, for the widest compatibility.
     container: fedora:43
     steps:
@@ -91,6 +94,7 @@ jobs:
   test-deb:
     needs: deb-and-tarball
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -103,7 +107,10 @@ jobs:
       - name: Install
         run: |
           apt-get update
+          before=$(stat -c '%a %U' / /usr /usr/lib /usr/share)
           apt-get install -y ./loadguard_*.deb
+          # Installing must never change the folders it installs into.
+          [ "$(stat -c '%a %U' / /usr /usr/lib /usr/share)" = "$before" ]
       - name: Check
         run: |
           loadguard --version
@@ -120,6 +127,7 @@ jobs:
   test-rpm:
     needs: rpm
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -139,7 +147,10 @@ jobs:
         with:
           name: rpm
       - name: Install
-        run: ${{ matrix.install }} ./loadguard-*.rpm
+        run: |
+          before=$(stat -c '%a %U' / /usr /usr/lib /usr/share)
+          ${{ matrix.install }} ./loadguard-*.rpm
+          [ "$(stat -c '%a %U' / /usr /usr/lib /usr/share)" = "$before" ]
       - name: Check
         run: |
           loadguard --version
@@ -155,6 +166,7 @@ jobs:
   test-tarball:
     needs: deb-and-tarball
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -167,8 +179,12 @@ jobs:
         run: |
           tar -xzf loadguard-*.tar.gz
           cd loadguard-*/
+          before=$(stat -c '%a %U' / /usr /usr/lib /usr/share)
           sudo ./install.sh
+          # Installing must never change the folders it installs into.
+          [ "$(stat -c '%a %U' / /usr /usr/lib /usr/share)" = "$before" ]
           systemctl is-enabled loadguard
+          systemctl is-active loadguard
           loadguard --version
           sudo /usr/lib/loadguard/uninstall.sh
           test ! -e /usr/bin/loadguard
@@ -177,6 +193,7 @@ jobs:
     if: github.ref_type == 'tag'
     needs: [version, test-deb, test-rpm, test-tarball]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

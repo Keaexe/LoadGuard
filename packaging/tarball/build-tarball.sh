@@ -2,6 +2,7 @@
 # Builds the generic .tar.gz from release binaries.
 # Usage: build-tarball.sh <binaries dir> <version> <output dir>
 set -eu
+umask 022
 bin=$1
 version=$2
 out=$3
@@ -10,6 +11,8 @@ root=$(dirname "$(dirname "$here")")
 name=loadguard-$version-$(uname -m)
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
+# mktemp makes a private folder; packaged folders must be world-readable.
+chmod 755 "$stage"
 
 dir=$stage/$name
 install -d "$dir/bin" "$dir/packaging" "$dir/crates/loadguard-gui/ui"

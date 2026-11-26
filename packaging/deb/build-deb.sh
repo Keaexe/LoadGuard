@@ -2,6 +2,7 @@
 # Builds the .deb from release binaries. Runs on Debian or Ubuntu.
 # Usage: build-deb.sh <binaries dir> <version> <output dir>
 set -eu
+umask 022
 bin=$1
 version=$2
 out=$3
@@ -10,6 +11,8 @@ root=$(dirname "$(dirname "$here")")
 arch=$(dpkg --print-architecture)
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
+# mktemp makes a private folder; packaged folders must be world-readable.
+chmod 755 "$stage"
 
 "$root/packaging/install-files.sh" "$bin" "$stage"
 install -Dm644 "$here/copyright" "$stage/usr/share/doc/loadguard/copyright"
