@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    # Reapplies saved limits at boot. Works without a running systemd too.
+    systemctl enable loadguard.service >/dev/null 2>&1 || true
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        # Lets the system bus see the new policy before anyone calls the helper.
+        busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus \
+            ReloadConfig >/dev/null 2>&1 || true
+        # On upgrade this runs the new helper; limits that end with their app are lost.
+        systemctl restart loadguard.service || true
+    fi
+fi

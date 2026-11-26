@@ -1,0 +1,194 @@
+name: Release
+
+# A version tag (v0.1.0) builds every package, installs each one on the
+# distributions it targets, then publishes them as a GitHub release.
+# Running it by hand does everything except publishing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read the version and check it matches the tag
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+  # Built on Debian 12, the oldest glibc supported, so the binaries also run on
+  # newer Debian and Ubuntu releases and on other distributions (tarball).
+  deb-and-tarball:
+    needs: version
+    runs-on: ubuntu-24.04
+    container: debian:12
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev \
+            pkg-config libfontconfig-dev libfreetype-dev libxkbcommon-dev
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+      - name: Build
+        run: . "$HOME/.cargo/env" && cargo build --release --locked --workspace
+      - name: Package
+        run: |
+          packaging/deb/build-deb.sh target/release "${{ needs.version.outputs.version }}" dist
+          packaging/tarball/build-tarball.sh target/release "${{ needs.version.outputs.version }}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-and-tarball
+          path: dist/
+
+  rpm:
+    needs: version
+    runs-on: ubuntu-24.04
+    # The oldest Fedora still supported, for the widest compatibility.
+    container: fedora:43
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gcc rpm-build systemd-rpm-macros \
+            pkgconf-pkg-config fontconfig-devel freetype-devel libxkbcommon-devel
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+      - name: Build
+        run: . "$HOME/.cargo/env" && cargo build --release --locked --workspace
+      - name: Package
+        run: |
+          src=$(mktemp -d)
+          mkdir "$src/bin"
+          cp target/release/loadguard target/release/loadguard-gui target/release/loadguard-helper "$src/bin/"
+          mkdir -p "$src/src/crates/loadguard-gui/ui"
+          cp -r packaging LICENSE "$src/src/"
+          cp crates/loadguard-gui/ui/icon.svg "$src/src/crates/loadguard-gui/ui/"
+          rpmbuild -bb packaging/rpm/loadguard.spec \
+            --define "_sourcedir $src" --define "_rpmdir $PWD/dist" \
+            --define "ver ${{ needs.version.outputs.version }}"
+          find dist -name '*.rpm' -exec mv {} dist/ \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: dist/*.rpm
+
+  # Installs each package with the distribution's own tools, which also proves
+  # its dependencies resolve, then checks every library is found and removal works.
+  test-deb:
+    needs: deb-and-tarball
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12', 'debian:13', 'ubuntu:24.04', 'ubuntu:26.04']
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb-and-tarball
+      - name: Install
+        run: |
+          apt-get update
+          apt-get install -y ./loadguard_*.deb
+      - name: Check
+        run: |
+          loadguard --version
+          # Lists each binary's libraries without running it, as ldd does.
+          for b in /usr/bin/loadguard /usr/bin/loadguard-gui /usr/lib/loadguard/loadguard-helper; do
+            if LD_TRACE_LOADED_OBJECTS=1 "$b" | grep 'not found'; then exit 1; fi
+          done
+          test -f /usr/share/polkit-1/actions/io.github.keaexe.LoadGuard.policy
+      - name: Remove
+        run: |
+          apt-get remove -y loadguard
+          test ! -e /usr/bin/loadguard
+
+  test-rpm:
+    needs: rpm
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: 'fedora:43'
+            install: dnf install -y
+            remove: dnf remove -y
+          - image: 'fedora:44'
+            install: dnf install -y
+            remove: dnf remove -y
+          - image: 'opensuse/tumbleweed'
+            install: zypper --non-interactive install --allow-unsigned-rpm
+            remove: zypper --non-interactive remove
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rpm
+      - name: Install
+        run: ${{ matrix.install }} ./loadguard-*.rpm
+      - name: Check
+        run: |
+          loadguard --version
+          for b in /usr/bin/loadguard /usr/bin/loadguard-gui /usr/libexec/loadguard/loadguard-helper; do
+            if LD_TRACE_LOADED_OBJECTS=1 "$b" | grep 'not found'; then exit 1; fi
+          done
+          grep -q /usr/libexec/loadguard/loadguard-helper /usr/lib/systemd/system/loadguard.service
+      - name: Remove
+        run: |
+          ${{ matrix.remove }} loadguard
+          test ! -e /usr/bin/loadguard
+
+  test-tarball:
+    needs: deb-and-tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb-and-tarball
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables polkitd
+      - name: Install, use and remove
+        run: |
+          tar -xzf loadguard-*.tar.gz
+          cd loadguard-*/
+          sudo ./install.sh
+          systemctl is-enabled loadguard
+          loadguard --version
+          sudo /usr/lib/loadguard/uninstall.sh
+          test ! -e /usr/bin/loadguard
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [version, test-deb, test-rpm, test-tarball]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * >SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "LoadGuard ${{ needs.version.outputs.version }}" --generate-notes ./*

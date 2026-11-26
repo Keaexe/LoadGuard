@@ -1,0 +1,14 @@
+Package: loadguard
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Keaexe <187970572+Keaexe@users.noreply.github.com>
+Installed-Size: @SIZE@
+Depends: libc6 (>= 2.36), libgcc-s1, libfontconfig1, libfreetype6, libxkbcommon0, nftables, polkitd | policykit-1, dbus, systemd
+Recommends: libegl1, libwayland-client0 | libx11-6
+Section: net
+Priority: optional
+Homepage: https://github.com/Keaexe/LoadGuard
+Description: limit the bandwidth of running apps
+ LoadGuard sets download and upload limits for individual apps, including
+ ones already running, from a window, the system tray or the command line.
+ A small system service applies the limits with nftables.

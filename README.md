@@ -71,7 +71,8 @@ loadguard clear firefox                          # or: loadguard clear --all
 ## Requirements
 
 - Linux with systemd and cgroup v2, which almost every current distribution uses.
-  `run` and launching from the window need systemd 254 or newer.
+  `run` and launching from the window need systemd 254 or newer, so they do not
+  work on Debian 12.
 - nftables and polkit.
 - A desktop that starts apps in their own cgroup, such as KDE Plasma or GNOME.
   On others, start apps through LoadGuard to limit them.
@@ -80,7 +81,36 @@ loadguard clear firefox                          # or: loadguard clear --all
 
 ## Install
 
+Packages for each release are on the
+[Releases page](https://github.com/Keaexe/LoadGuard/releases). Download the one
+for your distribution, then install it with the commands below. Afterwards, open
+**LoadGuard** from your app menu, or run `loadguard-gui`.
+
+### Debian, Ubuntu and derivatives
+
+Debian 12 or newer, Ubuntu 24.04 or newer.
+
+```sh
+sudo apt install ./loadguard_*_amd64.deb
+```
+
+To remove it: `sudo apt remove loadguard`. Add `--purge` to also delete saved limits.
+
+### Fedora and openSUSE
+
+Fedora 43 or newer, openSUSE Tumbleweed.
+
+```sh
+sudo dnf install ./loadguard-*.rpm                                  # Fedora
+sudo zypper install --allow-unsigned-rpm ./loadguard-*.rpm          # openSUSE
+```
+
+To remove it: `sudo dnf remove loadguard` or `sudo zypper remove loadguard`.
+
 ### Arch Linux
+
+Install `loadguard` from the AUR with your usual AUR helper, or build the
+current source yourself:
 
 ```sh
 git clone https://github.com/Keaexe/LoadGuard.git
@@ -89,18 +119,23 @@ makepkg -si
 sudo systemctl enable --now loadguard   # reapplies saved limits at boot
 ```
 
-Then open **LoadGuard** from your app menu, or run `loadguard-gui`.
+To remove it: `sudo systemctl disable --now loadguard`, then
+`sudo pacman -R loadguard` (or `loadguard-local` if you built it yourself).
 
-Packages for other distributions are planned.
+### Other distributions
 
-### Uninstall
+Any distribution with systemd, nftables and polkit can use the generic archive:
 
 ```sh
-sudo systemctl disable --now loadguard  # removes every limit
-sudo pacman -R loadguard-local
+tar -xzf loadguard-*-x86_64.tar.gz
+cd loadguard-*/
+sudo ./install.sh
 ```
 
-Saved limits stay in `/var/lib/loadguard` until you delete that folder.
+To remove it: `sudo /usr/lib/loadguard/uninstall.sh`.
+
+Removing LoadGuard lifts every limit. Saved limits stay in `/var/lib/loadguard`
+until you delete that folder, except with `apt remove --purge`.
 
 ## Build from source
 
@@ -128,6 +163,11 @@ cargo run -p loadguard-gui --example screens -- DIR   # GUI checks and screensho
 
 None of these need root or touch your real network or limits. `test-gui.sh`
 needs `kwin_wayland`.
+
+GitHub Actions checks every push (`.github/workflows/ci.yml`). Pushing a version
+tag such as `v0.1.0` builds the packages, installs each one on the distributions
+it targets, and publishes them as a release (`.github/workflows/release.yml`).
+The tag must match the version in `Cargo.toml`.
 
 | Crate | Contents |
 | --- | --- |

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ]; then
+    # Stopping the helper removes all of its rules.
+    systemctl disable --now loadguard.service >/dev/null 2>&1 || true
+fi

@@ -1,0 +1,8 @@
+post_install() {
+  echo "To reapply saved limits at boot: sudo systemctl enable --now loadguard"
+}
+
+post_upgrade() {
+  echo "To run the new helper: sudo systemctl try-restart loadguard"
+  echo "(this ends limits that last until their app closes)"
+}

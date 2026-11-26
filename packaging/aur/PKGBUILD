@@ -1,0 +1,40 @@
+# Maintainer: Keaexe <187970572+Keaexe@users.noreply.github.com>
+# Before publishing a release: set pkgver, run updpkgsums, then
+# makepkg --printsrcinfo > .SRCINFO
+pkgname=loadguard
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Limit the download and upload speed of individual apps'
+arch=(x86_64 aarch64)
+url='https://github.com/Keaexe/LoadGuard'
+license=(GPL-3.0-only)
+depends=(fontconfig freetype2 gcc-libs glibc hicolor-icon-theme libxkbcommon nftables polkit systemd)
+makedepends=(cargo)
+install=loadguard.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "LoadGuard-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "LoadGuard-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  # Keeps the build folder's path out of the binaries.
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/"
+  cargo build --frozen --release --workspace
+}
+
+check() {
+  cd "LoadGuard-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "LoadGuard-$pkgver"
+  packaging/install-files.sh target/release "$pkgdir"
+}
