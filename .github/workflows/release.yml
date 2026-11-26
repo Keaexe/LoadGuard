@@ -18,7 +18,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: version
         name: Read the version and check it matches the tag
         run: |
@@ -42,7 +42,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev \
             pkg-config libfontconfig-dev libfreetype-dev libxkbcommon-dev
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
       - name: Build
@@ -51,7 +51,7 @@ jobs:
         run: |
           packaging/deb/build-deb.sh target/release "${{ needs.version.outputs.version }}" dist
           packaging/tarball/build-tarball.sh target/release "${{ needs.version.outputs.version }}" dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deb-and-tarball
           path: dist/
@@ -67,7 +67,7 @@ jobs:
         run: |
           dnf install -y --setopt=install_weak_deps=False gcc rpm-build systemd-rpm-macros \
             pkgconf-pkg-config fontconfig-devel freetype-devel libxkbcommon-devel
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
       - name: Build
@@ -84,7 +84,7 @@ jobs:
             --define "_sourcedir $src" --define "_rpmdir $PWD/dist" \
             --define "ver ${{ needs.version.outputs.version }}"
           find dist -name '*.rpm' -exec mv {} dist/ \;
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rpm
           path: dist/*.rpm
@@ -101,7 +101,7 @@ jobs:
         image: ['debian:12', 'debian:13', 'ubuntu:24.04', 'ubuntu:26.04']
     container: ${{ matrix.image }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: deb-and-tarball
       - name: Install
@@ -143,7 +143,7 @@ jobs:
             remove: zypper --non-interactive remove
     container: ${{ matrix.image }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: rpm
       - name: Install
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: deb-and-tarball
       - name: Install dependencies
@@ -197,7 +197,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
