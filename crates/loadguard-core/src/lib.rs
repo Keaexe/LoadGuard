@@ -10,4 +10,4 @@ pub mod rate;
 pub use apps::App;
 pub use cgroup::CgroupPath;
 pub use config::Config;
-pub use rate::{Limit, Rate};
+pub use rate::{Limit, Rate, Unit};

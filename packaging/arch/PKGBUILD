@@ -6,7 +6,7 @@ pkgdesc='Limit the bandwidth of running apps'
 arch=(x86_64 aarch64)
 url='https://github.com/Keaexe/LoadGuard'
 license=(GPL-3.0-only)
-depends=(gcc-libs glibc nftables polkit systemd)
+depends=(fontconfig freetype2 gcc-libs glibc hicolor-icon-theme libxkbcommon nftables polkit systemd)
 makedepends=(cargo)
 provides=(loadguard)
 conflicts=(loadguard)
@@ -22,9 +22,12 @@ package() {
   cd "$_root"
   local t="$srcdir/target/release" id=io.github.keaexe.LoadGuard
   install -Dm755 "$t/loadguard" "$pkgdir/usr/bin/loadguard"
+  install -Dm755 "$t/loadguard-gui" "$pkgdir/usr/bin/loadguard-gui"
   install -Dm755 "$t/loadguard-helper" "$pkgdir/usr/lib/loadguard/loadguard-helper"
   install -Dm644 packaging/loadguard.service -t "$pkgdir/usr/lib/systemd/system"
   install -Dm644 packaging/${id}1.service -t "$pkgdir/usr/share/dbus-1/system-services"
   install -Dm644 packaging/${id}1.conf -t "$pkgdir/usr/share/dbus-1/system.d"
   install -Dm644 packaging/$id.policy -t "$pkgdir/usr/share/polkit-1/actions"
+  install -Dm644 packaging/$id.desktop -t "$pkgdir/usr/share/applications"
+  install -Dm644 crates/loadguard-gui/ui/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$id.svg"
 }

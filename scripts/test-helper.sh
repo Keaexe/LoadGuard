@@ -88,7 +88,8 @@ echo "ok: denied without authorization"
 kill $pk; wait $pk 2>/dev/null || true; : >"$LG_TMP/polkit.log"; polkit allow
 
 base=$(speed down 3); between "no limit" "$base" 5000 999999999
-lg limit $app -d 500; lg limit $app -u 300
+lg limit $app -d 500 --always; lg limit $app -u 300
+[[ $(lg list) == *always* ]] || fail "changing a limit changed its duration"
 lg list | grep -E "$app .*500 KB/s .*300 KB/s" >/dev/null || fail "second limit replaced the first"
 between "download, cap 500" "$(speed down)" 250 600
 speed up 9 >/dev/null; sleep 1; up=$(cat "$LG_TMP/server.py.up" || echo 0)
@@ -98,14 +99,14 @@ between "upload as received, cap 300" "$up" 150 400
 lg clear E2E >/dev/null; out=$(lg list); [[ $out != *"KB/s"* ]] || fail "clear by partial name"
 echo "ok: clear by partial name"
 python3 "$LG_TMP/client.py" down 12 x >"$LG_TMP/live" & live=$!
-sleep 3; lg limit $app -d 500 --until-closed >/dev/null; wait $live
+sleep 3; lg limit $app -d 500 >/dev/null; wait $live
 between "limit applied to an open connection" "$(cat "$LG_TMP/live")" 200 650
-[ -z "$(ls "$STATE_DIRECTORY")" ] && echo "ok: until-closed is not saved" || fail "until-closed saved"
+[ -z "$(ls "$STATE_DIRECTORY")" ] && echo "ok: until-closed is the default and is not saved" || fail "until-closed saved"
 
 nft flush ruleset; sleep 12
 nft list tables | grep -q loadguard && echo "ok: rules restored after an external flush" || fail "not restored"
 
-lg limit $app -d 500 >/dev/null
+lg limit $app -d 500 --always >/dev/null
 kill $hp; wait $hp 2>/dev/null || true; "$bin/loadguard-helper" --cleanup
 nft list tables | grep -q loadguard && fail "cleanup left rules"
 echo "ok: cleanup removes rules"
@@ -126,7 +127,7 @@ while time.time() < end:
     except TimeoutError: pass
 print(int(n / 4000))
 P
-lg limit $app -d 5000 >/dev/null
+lg limit $app -d 5000 --always >/dev/null
 between "run, cap 500, from the first byte" "$(lg run -d 500 -- python3 "$LG_TMP/first.py" 2>/dev/null)" 200 700
 [ "$(lg run -d 500 -- sh -c 'echo "$1|$2"; exit 7' x 'a b' '$HOME %n'; echo $?)" = $'a b|$HOME %n\n7' ] || fail "run arguments or exit code"
 echo "ok: run keeps arguments and exit code"

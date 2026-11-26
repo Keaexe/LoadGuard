@@ -1,0 +1,533 @@
+import { Palette, ScrollView } from "std-widgets.slint";
+
+export struct AppRow {
+    id: string,
+    name: string,
+    detail: string,
+    icon: image,
+    has-icon: bool,
+    letter: string,
+    limited: bool,
+    down: string,
+    up: string,
+}
+
+export global Theme {
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    out property <color> bg: dark ? #191c21 : #f4f5f8;
+    out property <color> card: dark ? #22262d : #ffffff;
+    out property <color> line: dark ? #373d47 : #dde0e8;
+    out property <color> text: dark ? #eceef2 : #1c2028;
+    out property <color> muted: dark ? #a2aab8 : #5f6878;
+    out property <color> accent: dark ? #3258b8 : #1b3a8a;
+    out property <color> accent-text: dark ? #9db8ff : #1b3a8a;
+    out property <color> soft: dark ? #26345a : #e3e9f8;
+    out property <color> danger: dark ? #ff9a92 : #a8231b;
+}
+
+component Button inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> link;
+    in property <bool> enabled: true;
+    in property <string> label: text;
+    callback clicked();
+    public function focus-self() { scope.focus(); }
+    height: 34px;
+    min-width: label-text.preferred-width + (link ? 12px : 30px);
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 6px;
+    border-width: scope.has-focus ? 2px : (link || primary ? 0px : 1px);
+    border-color: scope.has-focus ? Theme.accent-text : Theme.line;
+    opacity: enabled ? 1 : 0.5;
+    background: primary ? (touch.has-hover && enabled ? Theme.accent.brighter(15%) : Theme.accent)
+        : touch.has-hover && enabled ? Theme.soft : link ? transparent : Theme.card;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    label-text := Text {
+        text: root.text;
+        color: root.primary ? white : root.link ? Theme.accent-text : Theme.text;
+        font-weight: root.primary || root.link ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if (e.text == Key.Return || e.text == " ") { root.clicked(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Field inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <string> label: placeholder;
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback accepted();
+    public function focus-all() { input.focus(); input.select-all(); }
+    height: 36px;
+    min-width: 60px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    border-radius: 6px;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Theme.accent-text : Theme.line;
+    background: Theme.card;
+    clip: true;
+    Text {
+        x: 11px;
+        visible: input.text == "";
+        text: root.placeholder;
+        color: Theme.muted;
+        vertical-alignment: center;
+        height: 100%;
+    }
+    input := TextInput {
+        x: 11px;
+        width: parent.width - 22px;
+        height: 100%;
+        enabled: root.enabled;
+        color: root.enabled ? Theme.text : Theme.muted;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: white;
+        vertical-alignment: center;
+        single-line: true;
+        accessible-role: text-input;
+        accessible-label: root.label;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(); }
+    }
+}
+
+component Segment inherits Rectangle {
+    in property <[string]> options;
+    in property <int> current;
+    callback selected(int);
+    height: 36px;
+    horizontal-stretch: 0;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.line;
+    background: Theme.card;
+    clip: true;
+    HorizontalLayout {
+        for option[i] in root.options: Rectangle {
+            background: i == root.current ? Theme.soft : transparent;
+            border-width: seg-scope.has-focus ? 2px : 0px;
+            border-color: Theme.accent-text;
+            min-width: seg-text.preferred-width + 24px;
+            accessible-role: radio-button;
+            accessible-label: option;
+            accessible-checkable: true;
+            accessible-checked: i == root.current;
+            accessible-action-default => { root.selected(i); }
+            seg-text := Text {
+                text: option;
+                color: i == root.current ? Theme.accent-text : Theme.muted;
+                font-weight: i == root.current ? 600 : 400;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            seg-scope := FocusScope {
+                key-pressed(e) => {
+                    if (e.text == Key.Return || e.text == " ") { root.selected(i); return accept; }
+                    reject
+                }
+            }
+            TouchArea { mouse-cursor: pointer; clicked => { root.selected(i); } }
+        }
+    }
+}
+
+component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+    callback toggled();
+    function flip() { root.checked = !root.checked; root.toggled(); }
+    width: 40px;
+    height: 24px;
+    border-radius: 12px;
+    border-width: toggle-scope.has-focus ? 2px : 0px;
+    border-color: Theme.text;
+    background: checked ? Theme.accent : Theme.line;
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.flip(); }
+    Rectangle {
+        x: root.checked ? 19px : 3px;
+        y: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: root.checked ? white : Theme.muted;
+    }
+    toggle-scope := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Return || e.text == " ") { root.flip(); return accept; }
+            reject
+        }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { root.flip(); } }
+}
+
+component Radio inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback selected();
+    min-height: radio-layout.preferred-height;
+    opacity: enabled ? 1 : 0.5;
+    accessible-role: radio-button;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.selected(); } }
+    radio-layout := HorizontalLayout {
+        spacing: 9px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 1px;
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border-width: root.checked ? 6px : 1.5px;
+                border-color: root.checked || radio-scope.has-focus ? Theme.accent-text : Theme.muted;
+            }
+        }
+        VerticalLayout {
+            Text { text: root.text; color: Theme.text; }
+            if root.hint != "": Text { text: root.hint; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+        }
+    }
+    radio-scope := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if (e.text == Key.Return || e.text == " ") { root.selected(); return accept; }
+            reject
+        }
+    }
+    TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.selected(); } }
+}
+
+component Tile inherits Rectangle {
+    in property <AppRow> entry;
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    background: entry.has-icon ? transparent : #4a5a78;
+    if entry.has-icon: Image { source: entry.icon; width: 100%; height: 100%; image-fit: contain; }
+    if !entry.has-icon: Text {
+        text: entry.letter;
+        color: white;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+}
+
+component Row inherits Rectangle {
+    in property <AppRow> entry;
+    in property <bool> first;
+    in property <bool> can-edit;
+    callback open();
+    callback remove();
+    height: 54px;
+    background: entry.limited && area.has-hover && can-edit ? Theme.soft : transparent;
+    if !root.first: Rectangle { y: 0; height: 1px; background: Theme.line; }
+    area := TouchArea {
+        enabled: root.entry.limited && root.can-edit;
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 10px;
+        spacing: 12px;
+        VerticalLayout { alignment: center; Tile { entry: root.entry; } }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text { text: root.entry.name; color: Theme.text; font-weight: 600; overflow: elide; }
+            Text { text: root.entry.detail; color: Theme.muted; font-size: 12px; overflow: elide; }
+        }
+        if root.entry.limited: Text { text: "↓ " + root.entry.down; color: Theme.text; vertical-alignment: center; horizontal-alignment: right; min-width: 108px; }
+        if root.entry.limited: Text { text: "↑ " + root.entry.up; color: Theme.text; vertical-alignment: center; horizontal-alignment: right; min-width: 108px; }
+        VerticalLayout {
+            alignment: center;
+            if root.entry.limited: HorizontalLayout {
+                spacing: 4px;
+                Button { text: "Edit"; label: "Edit limit of " + root.entry.name; enabled: root.can-edit; clicked => { root.open(); } }
+                Button { text: "×"; link: true; label: "Remove limit of " + root.entry.name; enabled: root.can-edit; clicked => { root.remove(); } }
+            }
+            if !root.entry.limited: Button { text: "Limit…"; label: "Limit " + root.entry.name; enabled: root.can-edit; clicked => { root.open(); } }
+        }
+    }
+}
+
+component Section inherits VerticalLayout {
+    in property <string> title;
+    in property <[AppRow]> rows;
+    in property <bool> can-edit;
+    in property <string> action;
+    callback open(string);
+    callback remove(string);
+    callback action-clicked();
+    spacing: 6px;
+    alignment: start;
+    HorizontalLayout {
+        height: 30px;
+        Text { text: root.title; color: Theme.muted; font-weight: 600; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+        if root.action != "": Button { text: root.action; link: true; enabled: root.can-edit; height: 30px; clicked => { root.action-clicked(); } }
+    }
+    Rectangle {
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.line;
+        border-radius: 8px;
+        clip: true;
+        VerticalLayout {
+            for row[i] in root.rows: Row {
+                entry: row;
+                first: i == 0;
+                can-edit: root.can-edit;
+                open => { root.open(row.id); }
+                remove => { root.remove(row.id); }
+            }
+        }
+    }
+}
+
+// A dimmed layer that blocks the window behind it.
+component Overlay inherits Rectangle {
+    in property <length> card-width: 430px;
+    callback dismissed();
+    public function grab() { keys.focus(); }
+    background: Theme.dark ? #000000a0 : #14192060;
+    TouchArea { }
+    keys := FocusScope {
+        capture-key-pressed(e) => {
+            if (e.text == Key.Escape) { root.dismissed(); return accept; }
+            reject
+        }
+        Rectangle {
+            width: min(root.card-width, root.width - 32px);
+            height: content.preferred-height;
+            background: Theme.card;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.line;
+            content := VerticalLayout {
+                padding: 22px;
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+}
+
+component DirectionEdit inherits VerticalLayout {
+    in property <string> title;
+    in property <string> unit;
+    in-out property <bool> on;
+    in-out property <string> text;
+    callback accepted();
+    public function focus-field() { field.focus-all(); }
+    spacing: 5px;
+    padding-top: 6px;
+    Text { text: root.title; color: Theme.text; font-weight: 600; }
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout { alignment: center; Toggle { checked <=> root.on; label: "Limit " + root.title; toggled => { if (root.on) { field.focus-all(); } } } }
+        field := Field {
+            text <=> root.text;
+            enabled: root.on;
+            placeholder: root.on ? "Speed" : "Unlimited";
+            label: root.title + " limit";
+            accepted => { root.accepted(); }
+        }
+        Text { text: root.unit; color: Theme.muted; vertical-alignment: center; min-width: 46px; }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "LoadGuard";
+    icon: @image-url("icon.svg");
+    preferred-width: 820px;
+    preferred-height: 640px;
+    min-width: 560px;
+    min-height: 420px;
+    background: Theme.bg;
+    default-font-size: 14px;
+
+    in property <[AppRow]> limited;
+    in property <[AppRow]> running;
+    in property <int> unit;
+    in property <string> unit-label: "KB/s";
+    in property <bool> can-edit;
+    in property <string> status;
+    in property <bool> can-start;
+    in-out property <string> error;
+    in property <bool> show-all;
+    in property <bool> searching;
+    callback search(string);
+    callback set-unit(int);
+    callback toggle-all();
+    callback start-helper();
+    callback open(string);
+    callback remove(string);
+    callback clear-all();
+    callback apply();
+
+    in-out property <bool> editor-open;
+    in property <AppRow> editing;
+    in property <string> also-covers;
+    in property <bool> is-running;
+    in-out property <bool> down-on;
+    in-out property <string> down-text;
+    in-out property <bool> up-on;
+    in-out property <string> up-text;
+    in-out property <bool> until-closed;
+    in property <bool> busy;
+    in-out property <string> editor-error;
+    in-out property <bool> confirm-open;
+    // Follows the desktop unless set.
+    in-out property <ColorScheme> scheme <=> Palette.color-scheme;
+
+    VerticalLayout {
+        Rectangle {
+            vertical-stretch: 0;
+            HorizontalLayout {
+                padding: 14px;
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 12px;
+                Field { placeholder: "Search apps"; edited(t) => { root.search(t); } }
+                Segment { options: ["KB/s", "Mbit/s"]; current: root.unit; selected(i) => { root.set-unit(i); } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+        }
+        if root.error != "": Rectangle {
+            vertical-stretch: 0;
+            background: Theme.soft;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 14px;
+                padding-top: 5px;
+                padding-bottom: 5px;
+                Text { text: root.error; color: Theme.danger; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                Button { text: "Dismiss"; link: true; clicked => { root.error = ""; } }
+            }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 20px;
+                padding-top: 10px;
+                spacing: 12px;
+                alignment: start;
+                if root.limited.length > 0: Section {
+                    title: "Limited";
+                    rows: root.limited;
+                    can-edit: root.can-edit;
+                    action: "Clear all";
+                    open(id) => { root.open(id); }
+                    remove(id) => { root.remove(id); }
+                    action-clicked => { root.confirm-open = true; }
+                }
+                if root.running.length > 0: Section {
+                    title: "Running";
+                    rows: root.running;
+                    can-edit: root.can-edit;
+                    open(id) => { root.open(id); }
+                }
+                if root.limited.length == 0 && root.running.length == 0: Text {
+                    text: root.searching ? "No app matches your search." : "No running apps found. LoadGuard lists apps your desktop starts in their own group.";
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 0;
+            Rectangle { y: 0; height: 1px; background: Theme.line; }
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 14px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                spacing: 10px;
+                Text { text: root.status; color: root.can-edit ? Theme.muted : Theme.danger; font-size: 12.5px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                if root.can-start: Button { text: "Start helper"; clicked => { root.start-helper(); } }
+                Button { text: root.show-all ? "Hide background services" : "Show background services"; link: true; clicked => { root.toggle-all(); } }
+            }
+        }
+    }
+
+    if root.editor-open: editor := Overlay {
+        init => { self.grab(); down-edit.focus-field(); }
+        dismissed => { root.editor-open = false; }
+        HorizontalLayout {
+            spacing: 12px;
+            Tile { entry: root.editing; }
+            VerticalLayout {
+                alignment: center;
+                Text { text: "Limit " + root.editing.name; color: Theme.text; font-size: 17px; font-weight: 600; overflow: elide; }
+                if root.also-covers != "": Text { text: "Also covers: " + root.also-covers; color: Theme.muted; font-size: 12px; overflow: elide; }
+            }
+        }
+        down-edit := DirectionEdit { title: "Download"; unit: root.unit-label; on <=> root.down-on; text <=> root.down-text; accepted => { root.apply(); } }
+        up-edit := DirectionEdit { title: "Upload"; unit: root.unit-label; on <=> root.up-on; text <=> root.up-text; accepted => { root.apply(); } }
+        Text { text: "Keep this limit"; color: Theme.text; font-weight: 600; }
+        Radio {
+            text: "Until " + root.editing.name + " closes";
+            hint: root.is-running ? "" : "Not running at the moment";
+            checked: root.until-closed;
+            enabled: root.is-running;
+            selected => { root.until-closed = true; }
+        }
+        Radio { text: "Always"; hint: "Reapplied when the app or computer restarts"; checked: !root.until-closed; selected => { root.until-closed = false; } }
+        if root.editor-error != "": Text { text: root.editor-error; color: Theme.danger; wrap: word-wrap; }
+        HorizontalLayout {
+            padding-top: 10px;
+            spacing: 10px;
+            if root.editing.limited: Button { text: "Remove limit"; enabled: !root.busy; clicked => { root.remove(root.editing.id); } }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Cancel"; clicked => { root.editor-open = false; } }
+            Button { text: root.busy ? "Applying…" : "Apply"; primary: true; enabled: !root.busy; clicked => { root.apply(); } }
+        }
+    }
+
+    if root.confirm-open: Overlay {
+        card-width: 380px;
+        init => { self.grab(); cancel.focus-self(); }
+        dismissed => { root.confirm-open = false; }
+        Text { text: "Clear all limits?"; color: Theme.text; font-size: 17px; font-weight: 600; }
+        Text { text: "Every app will use your full connection again, including apps limited until they close."; color: Theme.muted; wrap: word-wrap; }
+        HorizontalLayout {
+            padding-top: 10px;
+            spacing: 10px;
+            Rectangle { horizontal-stretch: 1; }
+            cancel := Button { text: "Cancel"; clicked => { root.confirm-open = false; } }
+            Button { text: "Clear all"; primary: true; enabled: !root.busy; clicked => { root.confirm-open = false; root.clear-all(); } }
+        }
+    }
+}

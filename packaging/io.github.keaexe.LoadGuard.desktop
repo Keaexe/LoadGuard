@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LoadGuard
+Comment=Limit the bandwidth of running apps
+Exec=loadguard-gui
+Icon=io.github.keaexe.LoadGuard
+Categories=Network;System;
+Keywords=bandwidth;limit;throttle;speed;
+Terminal=false

@@ -79,6 +79,48 @@ impl From<Rate> for String {
     }
 }
 
+/// Unit used to show rates and to read bare numbers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Unit {
+    #[default]
+    #[serde(rename = "KB/s")]
+    KiloBytes,
+    #[serde(rename = "Mbit/s")]
+    MegaBits,
+}
+
+impl Unit {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::KiloBytes => "KB/s",
+            Self::MegaBits => "Mbit/s",
+        }
+    }
+
+    fn bytes(self) -> f64 {
+        match self {
+            Self::KiloBytes => 1e3,
+            Self::MegaBits => 125e3,
+        }
+    }
+
+    /// The number alone, with at most three decimals.
+    pub fn number(self, rate: Rate) -> String {
+        let text = format!("{:.3}", rate.bytes() as f64 / self.bytes());
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    }
+
+    /// Reads a number in this unit, or a rate with its own unit. Accepts a decimal comma.
+    pub fn parse(self, text: &str) -> Result<Rate, String> {
+        let text = text.trim().replace(',', ".");
+        if text.ends_with(|c: char| c.is_ascii_digit()) {
+            format!("{text}{}", self.label()).parse()
+        } else {
+            text.parse()
+        }
+    }
+}
+
 /// Limits for one app. A missing direction is unlimited.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,6 +164,18 @@ mod tests {
         ] {
             assert!(s.parse::<Rate>().is_err(), "{s} should be rejected");
         }
+    }
+
+    #[test]
+    fn units_format_and_parse() {
+        let r = Rate::from_bytes(2_500_000).unwrap();
+        assert_eq!(Unit::KiloBytes.number(r), "2500");
+        assert_eq!(Unit::MegaBits.number(r), "20");
+        assert_eq!(Unit::MegaBits.parse("20").unwrap(), r);
+        assert_eq!(Unit::MegaBits.parse("0,5").unwrap().bytes(), 62_500);
+        assert_eq!(Unit::MegaBits.parse("500 KB").unwrap().bytes(), 500_000);
+        assert!(Unit::KiloBytes.parse("").is_err());
+        assert!(Unit::KiloBytes.parse("0").is_err());
     }
 
     #[test]

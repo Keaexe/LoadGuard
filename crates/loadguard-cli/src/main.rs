@@ -2,12 +2,12 @@ use clap::{Parser, Subcommand};
 use loadguard_core::{
     Config, Limit, Rate,
     apps::{self, App, CGROUP_ROOT},
-    client::{self, HelperProxy},
+    client::{self, Limits, connect as helper, explain, limits},
     nft,
 };
 use std::{
-    collections::BTreeMap, env, ffi::OsString, os::unix::fs::MetadataExt,
-    os::unix::process::CommandExt, path::Path, process, process::ExitCode, str::FromStr,
+    env, ffi::OsString, os::unix::fs::MetadataExt, os::unix::process::CommandExt, path::Path,
+    process, process::ExitCode, str::FromStr,
 };
 
 /// Limit the download and upload speed of running apps.
@@ -36,8 +36,11 @@ enum Command {
         /// Upload limit, or "none"
         #[arg(short, long)]
         up: Option<RateArg>,
-        /// Forget the limit when the app closes, instead of keeping it across reboots
+        /// Keep the limit when the app or the computer restarts
         #[arg(long)]
+        always: bool,
+        /// Forget the limit when the app closes (the default for new limits)
+        #[arg(long, conflicts_with = "always")]
         until_closed: bool,
         /// Print the rules without applying anything
         #[arg(long)]
@@ -101,31 +104,6 @@ fn main() -> ExitCode {
     }
 }
 
-type Limits = BTreeMap<String, (Limit, bool)>;
-
-fn helper() -> Result<HelperProxy<'static>, String> {
-    zbus::blocking::Connection::system()
-        .and_then(|c| HelperProxy::new(&c))
-        .map_err(|e| format!("cannot reach the system bus: {e}"))
-}
-
-fn explain(e: zbus::Error) -> String {
-    match e {
-        zbus::Error::MethodError(name, _, _) if name.as_str().ends_with(".ServiceUnknown") => {
-            "the LoadGuard helper is not installed".into()
-        }
-        zbus::Error::MethodError(_, Some(text), _) => text,
-        other => other.to_string(),
-    }
-}
-
-fn limits(helper: &HelperProxy) -> Result<Limits, String> {
-    let rows = helper.list_limits().map_err(explain)?;
-    rows.into_iter()
-        .map(|(id, down, up, temp)| Ok((id, (client::decode(down, up)?, temp))))
-        .collect()
-}
-
 fn run(command: Command) -> Result<(), String> {
     let path = Config::default_path().ok_or("cannot locate the configuration directory")?;
     let config = Config::load(&path)?;
@@ -151,6 +129,7 @@ fn run(command: Command) -> Result<(), String> {
             app,
             down,
             up,
+            always,
             until_closed,
             dry_run,
         } => {
@@ -166,6 +145,8 @@ fn run(command: Command) -> Result<(), String> {
                 Err(_) if dry_run => Limits::new(),
                 other => other?,
             };
+            // A changed limit keeps its duration unless told otherwise.
+            let until_closed = until_closed || (!always && limits.get(&id).is_none_or(|l| l.1));
             let mut limit = limits.get(&id).map(|l| l.0).unwrap_or_default();
             limit.down = down.map_or(limit.down, |r| r.0);
             limit.up = up.map_or(limit.up, |r| r.0);
