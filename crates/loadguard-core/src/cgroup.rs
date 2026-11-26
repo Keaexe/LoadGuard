@@ -24,6 +24,18 @@ impl CgroupPath {
         if !path.chars().all(allowed) {
             return bad("unsupported character");
         }
+        // nft reads backslashes literally, but only systemd's own \xNN escapes
+        // are needed, so nothing else is accepted.
+        let mut rest = path;
+        while let Some(at) = rest.find('\\') {
+            let escape = rest.get(at + 1..at + 4).unwrap_or_default();
+            let mut chars = escape.chars();
+            let valid = chars.next() == Some('x') && chars.all(|c| c.is_ascii_hexdigit());
+            if escape.len() != 3 || !valid {
+                return bad("backslash outside a \\xNN escape");
+            }
+            rest = &rest[at + 4..];
+        }
         Ok(Self(path.to_owned()))
     }
 
@@ -69,6 +81,10 @@ mod tests {
             format!("{base}/a//b"),
             format!("{base}/a\" accept; #"),
             format!("{base}/a\nflush ruleset"),
+            format!("{base}/evil\\"),
+            format!("{base}/a\\x2"),
+            format!("{base}/a\\y2d.scope"),
+            format!("{base}/a\\xg1.scope"),
         ] {
             assert!(CgroupPath::for_user(&p, 1000).is_err(), "{p:?}");
         }

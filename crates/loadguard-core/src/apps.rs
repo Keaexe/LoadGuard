@@ -8,6 +8,13 @@ pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 /// Users control the tree below their app slice, and the root helper walks it.
 const MAX_DEPTH: usize = 16;
 const MAX_CGROUPS_PER_APP: usize = 64;
+/// Folders visited per scan. The helper scans every second as root, and a user
+/// can create as many cgroups as they like, so the work must stay bounded.
+const MAX_DIRS: usize = 4096;
+const MAX_PIDS_PER_UNIT: usize = 4096;
+/// Process names and parents read per scan, for grouping.
+const MAX_STAT_READS: usize = 4096;
+const MAX_MOVERS: usize = 32;
 
 /// One app, possibly spread over several cgroups.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,7 +50,8 @@ pub fn discover(root: &Path, uid: u32) -> io::Result<Vec<App>> {
 
 fn discover_in(root: &Path, proc: &Path, uid: u32) -> io::Result<Vec<App>> {
     let mut units = Vec::new();
-    scan(root, &app_slice(uid), uid, 0, &mut units)?;
+    let mut dirs = MAX_DIRS;
+    scan(root, &app_slice(uid), uid, 0, &mut units, &mut dirs)?;
     let owners = find_owners(&units, proc);
 
     let mut found: BTreeMap<String, App> = BTreeMap::new();
@@ -90,6 +98,7 @@ fn find_owners(units: &[Unit], proc: &Path) -> Vec<usize> {
             let moved = !stem.starts_with("loadguard-") && u.pids.contains(&pid);
             moved.then_some((i, pid))
         })
+        .take(MAX_MOVERS)
         .collect();
     if movers.is_empty() {
         return owners;
@@ -100,6 +109,7 @@ fn find_owners(units: &[Unit], proc: &Path) -> Vec<usize> {
         .enumerate()
         .filter(|(_, u)| u.desktop)
         .flat_map(|(i, u)| u.pids.iter().map(move |pid| (i, *pid)))
+        .take(MAX_STAT_READS)
         .filter_map(|(i, pid)| read_stat(proc, pid).map(|(name, parent)| (i, parent, name)))
         .collect();
     for (unit, pid) in movers {
@@ -138,7 +148,14 @@ fn read_stat(proc: &Path, pid: u32) -> Option<(String, u32)> {
     Some((name, parent))
 }
 
-fn scan(root: &Path, rel: &str, uid: u32, depth: usize, units: &mut Vec<Unit>) -> io::Result<()> {
+fn scan(
+    root: &Path,
+    rel: &str,
+    uid: u32,
+    depth: usize,
+    units: &mut Vec<Unit>,
+    dirs: &mut usize,
+) -> io::Result<()> {
     if depth > MAX_DEPTH {
         return Ok(());
     }
@@ -147,13 +164,17 @@ fn scan(root: &Path, rel: &str, uid: u32, depth: usize, units: &mut Vec<Unit>) -
         if !entry.file_type()?.is_dir() {
             continue;
         }
+        if *dirs == 0 {
+            return Ok(());
+        }
+        *dirs -= 1;
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
         let path = format!("{rel}/{name}");
         if name.ends_with(".slice") {
             // Units come and go while we scan, so a vanished slice is not an error.
-            let _ = scan(root, &path, uid, depth + 1, units);
+            let _ = scan(root, &path, uid, depth + 1, units, dirs);
             continue;
         }
         let Some((id, desktop)) = parse_unit(&name) else {
@@ -163,7 +184,7 @@ fn scan(root: &Path, rel: &str, uid: u32, depth: usize, units: &mut Vec<Unit>) -
             continue;
         };
         let mut pids = Vec::new();
-        collect_pids(&entry.path(), 0, &mut pids);
+        collect_pids(&entry.path(), 0, &mut pids, dirs);
         if !pids.is_empty() {
             units.push(Unit {
                 name,
@@ -177,18 +198,23 @@ fn scan(root: &Path, rel: &str, uid: u32, depth: usize, units: &mut Vec<Unit>) -
     Ok(())
 }
 
-fn collect_pids(dir: &Path, depth: usize, pids: &mut Vec<u32>) {
-    if depth > MAX_DEPTH {
+fn collect_pids(dir: &Path, depth: usize, pids: &mut Vec<u32>, dirs: &mut usize) {
+    if depth > MAX_DEPTH || pids.len() >= MAX_PIDS_PER_UNIT {
         return;
     }
     let own = fs::read_to_string(dir.join("cgroup.procs")).unwrap_or_default();
-    pids.extend(own.lines().filter_map(|l| l.parse::<u32>().ok()));
+    let room = MAX_PIDS_PER_UNIT - pids.len();
+    pids.extend(own.lines().filter_map(|l| l.parse::<u32>().ok()).take(room));
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            collect_pids(&entry.path(), depth + 1, pids);
+            if *dirs == 0 {
+                return;
+            }
+            *dirs -= 1;
+            collect_pids(&entry.path(), depth + 1, pids, dirs);
         }
     }
 }
@@ -410,6 +436,22 @@ mod tests {
         );
         assert_eq!(apps.len(), 8);
         assert!(apps.iter().all(|a| a.1.is_empty() && a.2 == 1));
+    }
+
+    #[test]
+    fn scanning_a_hostile_tree_stays_bounded() {
+        let dir = std::env::temp_dir().join(format!("lg-apps-{}-many", std::process::id()));
+        let slice = dir.join(app_slice(1000));
+        for i in 0..MAX_DIRS + 500 {
+            let unit = slice.join(format!("app-x{i}@1.service"));
+            fs::create_dir_all(&unit).unwrap();
+            fs::write(unit.join("cgroup.procs"), "1\n").unwrap();
+        }
+        let started = std::time::Instant::now();
+        let apps = discover_in(&dir, &dir.join("proc"), 1000).unwrap();
+        assert!(apps.len() < MAX_DIRS + 1, "{} units scanned", apps.len());
+        assert!(started.elapsed().as_secs() < 5);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
